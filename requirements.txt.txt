@@ -1,6 +1,0 @@
-streamlit
-pandas
-numpy
-scipy==1.11.4
-requests
-matplotlib
