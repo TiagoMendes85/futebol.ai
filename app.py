@@ -7,7 +7,7 @@ import math
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="AI Football Analytics PRO", layout="wide")
 st.title("⚽ AI Football Analytics - Previsões Avançadas")
-st.markdown("Análise preditiva com Modelo Dixon-Coles, Simulação de Monte Carlo e Forma Recente.")
+st.markdown("Análise preditiva com Modelo Dixon-Coles, Simulação de Monte Carlo, Clean Sheets e Rating Elo.")
 
 # --- BARRA LATERAL: INPUT DO UTILIZADOR ---
 st.sidebar.header("1. Configurações")
@@ -77,7 +77,27 @@ def obter_dados(codigo_liga, api_key):
 # --- MOTOR MATEMÁTICO ---
 def calcular_metricas(df):
     if df.empty: return None, None, None
+    
     df = df.sort_values('Data')
+    
+    # --- CÁLCULO DO RATING ELO ---
+    elo_ratings = {equipa: 1500 for equipa in set(df['Casa']).union(set(df['Fora']))}
+    K = 25
+    
+    for _, jogo in df.iterrows():
+        casa, fora = jogo['Casa'], jogo['Fora']
+        golos_casa, golos_fora = jogo['Golos_Casa'], jogo['Golos_Fora']
+        
+        expectativa_casa = 1 / (1 + 10**((elo_ratings[fora] - elo_ratings[casa]) / 400))
+        
+        if golos_casa > golos_fora: resultado_real = 1
+        elif golos_casa == golos_fora: resultado_real = 0.5
+        else: resultado_real = 0
+        
+        elo_ratings[casa] = elo_ratings[casa] + K * (resultado_real - expectativa_casa)
+        elo_ratings[fora] = elo_ratings[fora] + K * ((1 - resultado_real) - (1 - expectativa_casa))
+    # --- FIM DO CÁLCULO ELO ---
+
     df['Peso'] = df.index.map(lambda x: 2.5 if x >= len(df) - 15 else 1.0)
     
     media_golos_casa = np.average(df['Golos_Casa'], weights=df['Peso'])
@@ -108,11 +128,9 @@ def calcular_metricas(df):
         ataque_fora = (ataque_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         defesa_fora = (defesa_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         
-        # Cálculo de Clean Sheets
         cs_casa = (jogos_casa['Golos_Fora'] == 0).sum() / jogos_c if jogos_c > 0 else 0.3
         cs_fora = (jogos_fora['Golos_Casa'] == 0).sum() / jogos_f if jogos_f > 0 else 0.3
         
-        # Forma Recente
         ultimos_jogos = df[(df['Casa'] == equipa) | (df['Fora'] == equipa)].tail(5)
         forma = ""
         for _, jogo in ultimos_jogos.iterrows():
@@ -125,7 +143,8 @@ def calcular_metricas(df):
             'Ataque_Casa': ataque_casa, 'Defesa_Casa': defesa_casa, 
             'Ataque_Fora': ataque_fora, 'Defesa_Fora': defesa_fora,
             'Forma': forma.strip(), 'Jogos_Casa': jogos_c, 'Jogos_Fora': jogos_f,
-            'CS_Casa': cs_casa, 'CS_Fora': cs_fora
+            'CS_Casa': cs_casa, 'CS_Fora': cs_fora,
+            'Elo': elo_ratings[equipa]
         }
     return stats, media_golos_casa, media_golos_fora
 
@@ -136,9 +155,16 @@ def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
     # Fator Clean Sheet
     fator_cs_casa = 1.0 - (stats[fora]['CS_Fora'] * 0.3)
     fator_cs_fora = 1.0 - (stats[casa]['CS_Casa'] * 0.3)
-    
     lambda_casa = lambda_casa * fator_cs_casa
     lambda_fora = lambda_fora * fator_cs_fora
+
+    # Fator Elo
+    diff_elo = stats[casa]['Elo'] - stats[fora]['Elo']
+    fator_elo_casa = 1 + (diff_elo / 1000) 
+    fator_elo_fora = 1 - (diff_elo / 1000)
+    
+    lambda_casa = lambda_casa * fator_elo_casa
+    lambda_fora = lambda_fora * fator_elo_fora
 
     golos_casa_sim = np.random.poisson(lambda_casa, sims)
     golos_fora_sim = np.random.poisson(lambda_fora, sims)
@@ -294,6 +320,11 @@ else:
                     c_cs1, c_cs2 = st.columns(2)
                     c_cs1.metric(f"Clean Sheets em Casa ({casa})", f"{stats[casa]['CS_Casa']:.1%}")
                     c_cs2.metric(f"Clean Sheets Fora ({fora})", f"{stats[fora]['CS_Fora']:.1%}")
+                    
+                    st.markdown("### 🧠 Rating Elo (Força da Equipa)")
+                    c_elo1, c_elo2 = st.columns(2)
+                    c_elo1.metric(f"Elo ({casa})", f"{stats[casa]['Elo']:.0f}")
+                    c_elo2.metric(f"Elo ({fora})", f"{stats[fora]['Elo']:.0f}")
                     
                     st.markdown("### 🏆 Contexto na Classificação")
                     if tabela and casa in tabela and fora in tabela:
