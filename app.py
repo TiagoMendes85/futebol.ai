@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import numpy as np
-from scipy.stats import poisson
+import math
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="AI Football Analytics PRO", layout="wide")
@@ -28,8 +28,7 @@ LIGAS_DISPONIVEIS = {
     "Primeira Liga (Portugal)": "PPL",
     "Eredivisie (Holanda)": "DED",
     "Brasileirão (Brasil)": "BSA",
-    "Champions League": "CL",
-    "Europa League": "EL"
+    "Champions League": "CL"
 }
 
 liga_selecionada_nome = st.sidebar.selectbox("🏆 Escolhe o Campeonato", list(LIGAS_DISPONIVEIS.keys()))
@@ -99,7 +98,6 @@ def calcular_metricas(df):
         peso_c = jogos_c / (jogos_c + 5.0)
         peso_f = jogos_f / (jogos_f + 5.0)
         
-        # Cálculo das forças (como já tinhas)
         ataque_casa_bruto = np.average(jogos_casa['Golos_Casa'], weights=jogos_casa['Peso']) / media_golos_casa if jogos_c > 0 else 1.0
         defesa_casa_bruto = np.average(jogos_casa['Golos_Fora'], weights=jogos_casa['Peso']) / media_golos_fora if jogos_c > 0 else 1.0
         ataque_fora_bruto = np.average(jogos_fora['Golos_Fora'], weights=jogos_fora['Peso']) / media_golos_fora if jogos_f > 0 else 1.0
@@ -110,7 +108,7 @@ def calcular_metricas(df):
         ataque_fora = (ataque_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         defesa_fora = (defesa_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         
-        # NOVO: Cálculo de Clean Sheets (percentagem de jogos sem sofrer golos)
+        # Cálculo de Clean Sheets
         cs_casa = (jogos_casa['Golos_Fora'] == 0).sum() / jogos_c if jogos_c > 0 else 0.3
         cs_fora = (jogos_fora['Golos_Casa'] == 0).sum() / jogos_f if jogos_f > 0 else 0.3
         
@@ -127,7 +125,7 @@ def calcular_metricas(df):
             'Ataque_Casa': ataque_casa, 'Defesa_Casa': defesa_casa, 
             'Ataque_Fora': ataque_fora, 'Defesa_Fora': defesa_fora,
             'Forma': forma.strip(), 'Jogos_Casa': jogos_c, 'Jogos_Fora': jogos_f,
-            'CS_Casa': cs_casa, 'CS_Fora': cs_fora # Novas métricas adicionadas
+            'CS_Casa': cs_casa, 'CS_Fora': cs_fora
         }
     return stats, media_golos_casa, media_golos_fora
 
@@ -135,11 +133,9 @@ def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
     lambda_casa = stats[casa]['Ataque_Casa'] * stats[fora]['Defesa_Fora'] * med_casa
     lambda_fora = stats[fora]['Ataque_Fora'] * stats[casa]['Defesa_Casa'] * med_fora
     
-    # NOVO: Fator Clean Sheet
-    # Multiplicamos o xG por um redutor se as equipas forem muito defensivas.
-    # Ex: Se o CS for 0.5 (50% de jogos sem sofrer), o xG mantém-se. Se for 0.8, o xG baixa.
-    fator_cs_casa = 1.0 - (stats[fora]['CS_Fora'] * 0.3) # Se o fora não sofre golos, a casa marca menos
-    fator_cs_fora = 1.0 - (stats[casa]['CS_Casa'] * 0.3) # Se a casa não sofre golos, o fora marca menos
+    # Fator Clean Sheet
+    fator_cs_casa = 1.0 - (stats[fora]['CS_Fora'] * 0.3)
+    fator_cs_fora = 1.0 - (stats[casa]['CS_Casa'] * 0.3)
     
     lambda_casa = lambda_casa * fator_cs_casa
     lambda_fora = lambda_fora * fator_cs_fora
@@ -165,10 +161,13 @@ def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
     }
 
 def gerar_matriz_resultados(lambda_casa, lambda_fora, max_golos=5):
+    def calc_poisson(k, lamb):
+        return (math.exp(-lamb) * (lamb**k)) / math.factorial(k)
+
     matriz = np.zeros((max_golos, max_golos))
     for i in range(max_golos):
         for j in range(max_golos):
-            matriz[i, j] = poisson.pmf(i, lambda_casa) * poisson.pmf(j, lambda_fora)
+            matriz[i, j] = calc_poisson(i, lambda_casa) * calc_poisson(j, lambda_fora)
             
     index = [f"{i} Golos (Casa)" for i in range(max_golos)]
     columns = [f"{j} Golos (Fora)" for j in range(max_golos)]
@@ -179,7 +178,7 @@ def gerar_narrativa(casa, fora, stats, res):
     txt = f"O *{casa}* chega a este jogo com uma forma recente de [{stats[casa]['Forma']}], enquanto o *{fora}* apresenta [{stats[fora]['Forma']}]. "
     
     if stats[casa]['Jogos_Casa'] < 5 or stats[fora]['Jogos_Fora'] < 5:
-        txt += "(Nota: Uma das equipas tem poucos jogos realizados, pelo que o modelo aplicou uma regressão à média para evitar previsões extremas). "
+        txt += "(Nota: Uma das equipas tem poucos jogos realizados, pelo que o modelo aplicou uma regressão à média). "
         
     txt += f"O modelo projeta um xG de *{res['xG_Casa']:.2f}* para o {casa} e *{res['xG_Fora']:.2f}* para o {fora}. "
     
@@ -290,9 +289,11 @@ else:
                         'Golos Esperados': [res['xG_Casa'], res['xG_Fora']]
                     }).set_index('Equipa')
                     st.bar_chart(chart_data, color="#00a86b")
+                    
+                    st.markdown("### 🛡️ Análise de Clean Sheets")
                     c_cs1, c_cs2 = st.columns(2)
-c_cs1.metric(f"Clean Sheets em Casa ({casa})", f"{stats[casa]['CS_Casa']:.1%}")
-c_cs2.metric(f"Clean Sheets Fora ({fora})", f"{stats[fora]['CS_Fora']:.1%}")
+                    c_cs1.metric(f"Clean Sheets em Casa ({casa})", f"{stats[casa]['CS_Casa']:.1%}")
+                    c_cs2.metric(f"Clean Sheets Fora ({fora})", f"{stats[fora]['CS_Fora']:.1%}")
                     
                     st.markdown("### 🏆 Contexto na Classificação")
                     if tabela and casa in tabela and fora in tabela:
