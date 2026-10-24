@@ -99,6 +99,7 @@ def calcular_metricas(df):
         peso_c = jogos_c / (jogos_c + 5.0)
         peso_f = jogos_f / (jogos_f + 5.0)
         
+        # Cálculo das forças (como já tinhas)
         ataque_casa_bruto = np.average(jogos_casa['Golos_Casa'], weights=jogos_casa['Peso']) / media_golos_casa if jogos_c > 0 else 1.0
         defesa_casa_bruto = np.average(jogos_casa['Golos_Fora'], weights=jogos_casa['Peso']) / media_golos_fora if jogos_c > 0 else 1.0
         ataque_fora_bruto = np.average(jogos_fora['Golos_Fora'], weights=jogos_fora['Peso']) / media_golos_fora if jogos_f > 0 else 1.0
@@ -109,6 +110,11 @@ def calcular_metricas(df):
         ataque_fora = (ataque_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         defesa_fora = (defesa_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         
+        # NOVO: Cálculo de Clean Sheets (percentagem de jogos sem sofrer golos)
+        cs_casa = (jogos_casa['Golos_Fora'] == 0).sum() / jogos_c if jogos_c > 0 else 0.3
+        cs_fora = (jogos_fora['Golos_Casa'] == 0).sum() / jogos_f if jogos_f > 0 else 0.3
+        
+        # Forma Recente
         ultimos_jogos = df[(df['Casa'] == equipa) | (df['Fora'] == equipa)].tail(5)
         forma = ""
         for _, jogo in ultimos_jogos.iterrows():
@@ -120,7 +126,8 @@ def calcular_metricas(df):
         stats[equipa] = {
             'Ataque_Casa': ataque_casa, 'Defesa_Casa': defesa_casa, 
             'Ataque_Fora': ataque_fora, 'Defesa_Fora': defesa_fora,
-            'Forma': forma.strip(), 'Jogos_Casa': jogos_c, 'Jogos_Fora': jogos_f
+            'Forma': forma.strip(), 'Jogos_Casa': jogos_c, 'Jogos_Fora': jogos_f,
+            'CS_Casa': cs_casa, 'CS_Fora': cs_fora # Novas métricas adicionadas
         }
     return stats, media_golos_casa, media_golos_fora
 
@@ -128,6 +135,15 @@ def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
     lambda_casa = stats[casa]['Ataque_Casa'] * stats[fora]['Defesa_Fora'] * med_casa
     lambda_fora = stats[fora]['Ataque_Fora'] * stats[casa]['Defesa_Casa'] * med_fora
     
+    # NOVO: Fator Clean Sheet
+    # Multiplicamos o xG por um redutor se as equipas forem muito defensivas.
+    # Ex: Se o CS for 0.5 (50% de jogos sem sofrer), o xG mantém-se. Se for 0.8, o xG baixa.
+    fator_cs_casa = 1.0 - (stats[fora]['CS_Fora'] * 0.3) # Se o fora não sofre golos, a casa marca menos
+    fator_cs_fora = 1.0 - (stats[casa]['CS_Casa'] * 0.3) # Se a casa não sofre golos, o fora marca menos
+    
+    lambda_casa = lambda_casa * fator_cs_casa
+    lambda_fora = lambda_fora * fator_cs_fora
+
     golos_casa_sim = np.random.poisson(lambda_casa, sims)
     golos_fora_sim = np.random.poisson(lambda_fora, sims)
     total_golos_sim = golos_casa_sim + golos_fora_sim
@@ -274,6 +290,9 @@ else:
                         'Golos Esperados': [res['xG_Casa'], res['xG_Fora']]
                     }).set_index('Equipa')
                     st.bar_chart(chart_data, color="#00a86b")
+                    c_cs1, c_cs2 = st.columns(2)
+c_cs1.metric(f"Clean Sheets em Casa ({casa})", f"{stats[casa]['CS_Casa']:.1%}")
+c_cs2.metric(f"Clean Sheets Fora ({fora})", f"{stats[fora]['CS_Fora']:.1%}")
                     
                     st.markdown("### 🏆 Contexto na Classificação")
                     if tabela and casa in tabela and fora in tabela:
