@@ -186,24 +186,20 @@ def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, clima, fase_e
     lambda_casa = stats[casa]['Ataque_Casa'] * stats[fora]['Defesa_Fora'] * med_casa
     lambda_fora = stats[fora]['Ataque_Fora'] * stats[casa]['Defesa_Casa'] * med_fora
     
-    # Clean Sheet e FTS
     lambda_casa *= (1.0 - (stats[fora]['CS_Fora'] * 0.4))
     lambda_fora *= (1.0 - (stats[casa]['CS_Casa'] * 0.4))
     lambda_casa *= (1.0 - (stats[casa]['FTS_Casa'] * 0.3))
     lambda_fora *= (1.0 - (stats[fora]['FTS_Fora'] * 0.3))
 
-    # Elo
     diff_elo = stats[casa]['Elo'] - stats[fora]['Elo']
     lambda_casa *= (1 + (diff_elo / 1000))
     lambda_fora *= (1 - (diff_elo / 1000))
 
-    # Clima
     if clima == "Chuva Forte / Mau Tempo":
         lambda_casa *= 0.85
         lambda_fora *= 0.85
         st.caption("🌧️ Fator Chuva aplicado: -15% nos golos esperados.")
 
-    # Fase da Época
     lambda_casa *= fase_epoca_fator
     lambda_fora *= fase_epoca_fator
     if fase_epoca_fator < 1.0:
@@ -241,8 +237,11 @@ def gerar_matriz_resultados(lambda_casa, lambda_fora, max_golos=5):
 def gerar_narrativa(casa, fora, stats, res, clima_msg, fase_nome):
     txt = f"O *{casa}* chega a este jogo com uma forma recente de [{stats[casa]['Forma']}], enquanto o *{fora}* apresenta [{stats[fora]['Forma']}]. "
     txt += f"Estamos na fase *{fase_nome}* da época. "
+    
     if "Chuva" in clima_msg:
         txt += f"Condições climatéricas: *{clima_msg}*. "
+    else:
+        txt += f"Condições climatéricas: *Normais* ({clima_msg}). "
     
     txt += f"O modelo projeta um xG de *{res['xG_Casa']:.2f}* para o {casa} e *{res['xG_Fora']:.2f}* para o {fora}. "
     if res['Over2.5'] > 0.55:
@@ -272,10 +271,7 @@ else:
         
         if st.button("🚀 Gerar Análise Completa", use_container_width=True):
             if casa != fora:
-                # Obter clima automaticamente
                 clima, clima_msg = obter_clima_automatico(casa)
-                
-                # Calcular fase da época
                 jogos_feitos_casa = tabela[casa]['Jogos_Feitos'] if tabela and casa in tabela else 10
                 fase_nome, fase_fator = calcular_fase_epoca(jogos_feitos_casa)
                 
@@ -335,6 +331,14 @@ else:
                     st.table(odds_df)
 
                 with tab2:
+                    # --- PAINEL DE CONTEXTO AMBIENTAL ---
+                    st.markdown("### 🌍 Contexto Ambiental e Fase da Época")
+                    ctx1, ctx2 = st.columns(2)
+                    ctx1.info(f"*📍 Clima:* {clima_msg}")
+                    ctx2.info(f"*📅 Fase da Época:* {fase_nome}")
+                    st.markdown("---")
+                    # -------------------------------------
+
                     st.markdown("### 📊 Comparação de Força (xG Esperado)")
                     chart_data = pd.DataFrame({'Equipa': [casa, fora], 'xG': [res['xG_Casa'], res['xG_Fora']]}).set_index('Equipa')
                     st.bar_chart(chart_data, color="#00a86b")
