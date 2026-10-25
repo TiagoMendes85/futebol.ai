@@ -8,7 +8,7 @@ from pitchapi import PitchAPI
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="AI Football Analytics PRO", layout="wide")
 st.title("⚽ AI Football Analytics - Previsões Avançadas")
-st.markdown("Análise preditiva com Dixon-Coles, Monte Carlo, Elo, Clean Sheets, xG e Forma Recente.")
+st.markdown("Análise preditiva com Dixon-Coles, Monte Carlo, Elo, Clean Sheets, FTS e xG.")
 
 # --- BARRA LATERAL ---
 st.sidebar.header("1. Configurações")
@@ -82,40 +82,59 @@ def obter_dados_fd(codigo_liga, api_key):
     return df, tabela
 
 @st.cache_data(ttl=86400)
-def obter_xg_pitchapi(liga_id, epoca):
+def obter_metricas_pitchapi(liga_id, epoca):
+    """Vai buscar jogos à PitchAPI e calcula Clean Sheets e Failed to Score."""
     if not liga_id or not PITCHAPI_KEY:
         return {}
     try:
         with PitchAPI(api_key=PITCHAPI_KEY) as client:
             matches = client.leagues.matches(liga_id, season=epoca, status="all")
-            xg_stats = {}
-            for m in matches.matches:
-                if m.score_home is None: continue
-                try:
-                    adv = client.matches.advanced(m.id)
-                    xg_home = adv.xg_home if hasattr(adv, 'xg_home') else None
-                    xg_away = adv.xg_away if hasattr(adv, 'xg_away') else None
-                    if xg_home is None or xg_away is None: continue
-                    
-                    home_name = m.home_team.name
-                    if home_name not in xg_stats: xg_stats[home_name] = {'xg': 0, 'xga': 0, 'jogos': 0}
-                    xg_stats[home_name]['xg'] += xg_home
-                    xg_stats[home_name]['xga'] += xg_away
-                    xg_stats[home_name]['jogos'] += 1
-                    
-                    away_name = m.away_team.name
-                    if away_name not in xg_stats: xg_stats[away_name] = {'xg': 0, 'xga': 0, 'jogos': 0}
-                    xg_stats[away_name]['xg'] += xg_away
-                    xg_stats[away_name]['xga'] += xg_home
-                    xg_stats[away_name]['jogos'] += 1
-                except: continue
             
+            # Dicionário para acumular estatísticas
+            stats = {}
+            
+            for m in matches.matches:
+                # Só processa jogos que já foram jogados
+                if m.score_home is None or m.score_away is None:
+                    continue
+                
+                home_name = m.home_team.name
+                away_name = m.away_team.name
+                home_goals = m.score_home
+                away_goals = m.score_away
+                
+                # Inicializa a equipa se não existir
+                if home_name not in stats:
+                    stats[home_name] = {'jogos': 0, 'clean_sheets': 0, 'failed_to_score': 0}
+                if away_name not in stats:
+                    stats[away_name] = {'jogos': 0, 'clean_sheets': 0, 'failed_to_score': 0}
+                
+                # Atualiza estatísticas da equipa da casa
+                stats[home_name]['jogos'] += 1
+                if away_goals == 0:
+                    stats[home_name]['clean_sheets'] += 1
+                if home_goals == 0:
+                    stats[home_name]['failed_to_score'] += 1
+                
+                # Atualiza estatísticas da equipa de fora
+                stats[away_name]['jogos'] += 1
+                if home_goals == 0:
+                    stats[away_name]['clean_sheets'] += 1
+                if away_goals == 0:
+                    stats[away_name]['failed_to_score'] += 1
+            
+            # Calcula as percentagens
             medias = {}
-            for equipa, dados in xg_stats.items():
+            for equipa, dados in stats.items():
                 if dados['jogos'] > 0:
-                    medias[equipa] = {'xg_medio': dados['xg'] / dados['jogos'], 'xga_medio': dados['xga'] / dados['jogos']}
+                    medias[equipa] = {
+                        'cs_pct': dados['clean_sheets'] / dados['jogos'],
+                        'fts_pct': dados['failed_to_score'] / dados['jogos'],
+                        'jogos': dados['jogos']
+                    }
             return medias
-    except Exception:
+    except Exception as e:
+        st.warning(f"Aviso PitchAPI: {e}")
         return {}
 
 # --- MOTOR MATEMÁTICO ---
@@ -124,7 +143,7 @@ def calcular_metricas(df):
     
     df = df.sort_values('Data')
     
-    # 1. CÁLCULO DO RATING ELO
+    # Elo
     elo_ratings = {equipa: 1500 for equipa in set(df['Casa']).union(set(df['Fora']))}
     K = 25
     for _, jogo in df.iterrows():
@@ -136,7 +155,6 @@ def calcular_metricas(df):
         elo_ratings[casa] += K * (res - expectativa_casa)
         elo_ratings[fora] += K * ((1 - res) - (1 - expectativa_casa))
     
-    # 2. PESO DAS TENDÊNCIAS (Time-Decay: últimos 15 jogos valem 2.5x mais)
     df['Peso'] = df.index.map(lambda x: 2.5 if x >= len(df) - 15 else 1.0)
     
     media_golos_casa = np.average(df['Golos_Casa'], weights=df['Peso'])
@@ -157,7 +175,6 @@ def calcular_metricas(df):
         peso_c = jogos_c / (jogos_c + 5.0)
         peso_f = jogos_f / (jogos_f + 5.0)
         
-        # Força Base (Casa e Fora)
         ataque_casa_bruto = np.average(jogos_casa['Golos_Casa'], weights=jogos_casa['Peso']) / media_golos_casa if jogos_c > 0 else 1.0
         defesa_casa_bruto = np.average(jogos_casa['Golos_Fora'], weights=jogos_casa['Peso']) / media_golos_fora if jogos_c > 0 else 1.0
         ataque_fora_bruto = np.average(jogos_fora['Golos_Fora'], weights=jogos_fora['Peso']) / media_golos_fora if jogos_f > 0 else 1.0
@@ -168,35 +185,29 @@ def calcular_metricas(df):
         ataque_fora = (ataque_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         defesa_fora = (defesa_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         
-        # 3. CLEAN SHEETS
+        # Fallback para Clean Sheet (Football-Data)
         cs_casa = (jogos_casa['Golos_Fora'] == 0).sum() / jogos_c if jogos_c > 0 else 0.25
         cs_fora = (jogos_fora['Golos_Casa'] == 0).sum() / jogos_f if jogos_f > 0 else 0.25
             
-        # 4. FORMA RECENTE (Fator de Momento Matemático)
+        # Forma e Fator Momento
         ultimos_jogos = df[(df['Casa'] == equipa) | (df['Fora'] == equipa)].tail(5)
         forma = ""
         pontos_forma = 0
         for _, jogo in ultimos_jogos.iterrows():
             if jogo['Casa'] == equipa:
-                if jogo['Golos_Casa'] > jogo['Golos_Fora']:
-                    forma += "V "; pontos_forma += 3
-                elif jogo['Golos_Casa'] == jogo['Golos_Fora']:
-                    forma += "E "; pontos_forma += 1
+                if jogo['Golos_Casa'] > jogo['Golos_Fora']: forma += "V "; pontos_forma += 3
+                elif jogo['Golos_Casa'] == jogo['Golos_Fora']: forma += "E "; pontos_forma += 1
                 else: forma += "D "
             else:
-                if jogo['Golos_Fora'] > jogo['Golos_Casa']:
-                    forma += "V "; pontos_forma += 3
-                elif jogo['Golos_Fora'] == jogo['Golos_Casa']:
-                    forma += "E "; pontos_forma += 1
+                if jogo['Golos_Fora'] > jogo['Golos_Casa']: forma += "V "; pontos_forma += 3
+                elif jogo['Golos_Fora'] == jogo['Golos_Casa']: forma += "E "; pontos_forma += 1
                 else: forma += "D "
         
-        # Fator de Momento (de 0.8 a 1.2, dependendo dos pontos nos últimos 5 jogos)
-        # Máximo de pontos = 15. Se tiver 15, o multiplicador é 1.2. Se tiver 0, é 0.8.
         fator_momento = 0.8 + (pontos_forma / 15.0) * 0.4
 
         stats[equipa] = {
             'Ataque_Casa': ataque_casa * fator_momento, 
-            'Defesa_Casa': defesa_casa / fator_momento, # Se está em boa forma, a defesa "melhora" (divide)
+            'Defesa_Casa': defesa_casa / fator_momento,
             'Ataque_Fora': ataque_fora * fator_momento, 
             'Defesa_Fora': defesa_fora / fator_momento,
             'Forma': forma.strip(), 'Jogos_Casa': jogos_c, 'Jogos_Fora': jogos_f,
@@ -206,27 +217,28 @@ def calcular_metricas(df):
         }
     return stats, media_golos_casa, media_golos_fora
 
-def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, xg_data, sims=10000):
-    # Nota: O Ataque e Defesa já incluem o Fator de Momento da Forma Recente
+def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, pitch_metrics, sims=10000):
     lambda_casa = stats[casa]['Ataque_Casa'] * stats[fora]['Defesa_Fora'] * med_casa
     lambda_fora = stats[fora]['Ataque_Fora'] * stats[casa]['Defesa_Casa'] * med_fora
     
-    # Fator Clean Sheet
-    lambda_casa *= (1.0 - (stats[fora]['CS_Fora'] * 0.3))
-    lambda_fora *= (1.0 - (stats[casa]['CS_Casa'] * 0.3))
+    # --- INTEGRAÇÃO CLEAN SHEET E FTS DA PITCHAPI ---
+    if pitch_metrics:
+        casa_metrics = pitch_metrics.get(casa)
+        fora_metrics = pitch_metrics.get(fora)
+        
+        if casa_metrics and fora_metrics:
+            # Ajuste com Clean Sheet (se a equipa tem muitos CS, o adversário marca menos)
+            lambda_fora *= (1.0 - (casa_metrics['cs_pct'] * 0.4))
+            lambda_casa *= (1.0 - (fora_metrics['cs_pct'] * 0.4))
+            
+            # Ajuste com Failed to Score (se a equipa falha muito, marca menos)
+            lambda_casa *= (1.0 - (casa_metrics['fts_pct'] * 0.3))
+            lambda_fora *= (1.0 - (fora_metrics['fts_pct'] * 0.3))
 
-    # Fator Elo
+    # Elo
     diff_elo = stats[casa]['Elo'] - stats[fora]['Elo']
     lambda_casa *= (1 + (diff_elo / 1000))
     lambda_fora *= (1 - (diff_elo / 1000))
-
-    # Fator xG
-    if xg_data:
-        xg_casa = xg_data.get(casa)
-        xg_fora = xg_data.get(fora)
-        if xg_casa and xg_fora:
-            lambda_casa = (lambda_casa * 0.6) + (xg_casa['xg_medio'] * 0.4)
-            lambda_fora = (lambda_fora * 0.6) + (xg_fora['xg_medio'] * 0.4)
 
     golos_casa_sim = np.random.poisson(lambda_casa, sims)
     golos_fora_sim = np.random.poisson(lambda_fora, sims)
@@ -258,9 +270,14 @@ def gerar_matriz_resultados(lambda_casa, lambda_fora, max_golos=5):
     columns = [f"{j} Golos (Fora)" for j in range(max_golos)]
     return pd.DataFrame(matriz, index=index, columns=columns)
 
-def gerar_narrativa(casa, fora, stats, res):
-    txt = f"O *{casa}* chega a este jogo com uma forma recente de [{stats[casa]['Forma']}] (Fator Momento: {stats[casa]['Fator_Momento']:.2f}x), enquanto o *{fora}* apresenta [{stats[fora]['Forma']}] (Fator Momento: {stats[fora]['Fator_Momento']:.2f}x). "
-    txt += f"O modelo projeta um xG de *{res['xG_Casa']:.2f}* para o {casa} e *{res['xG_Fora']:.2f}* para o {fora}. "
+def gerar_narrativa(casa, fora, stats, res, pitch_metrics):
+    txt = f"O **{casa}** chega a este jogo com uma forma recente de `[{stats[casa]['Forma']}]`, enquanto o **{fora}** apresenta `[{stats[fora]['Forma']}]`. "
+    
+    if pitch_metrics and casa in pitch_metrics and fora in pitch_metrics:
+        txt += f"Na PitchAPI, o {casa} tem {pitch_metrics[casa]['cs_pct']:.1%} de Clean Sheets e falha a marcar em {pitch_metrics[casa]['fts_pct']:.1%} dos jogos. "
+        txt += f"O {fora} tem {pitch_metrics[fora]['cs_pct']:.1%} de Clean Sheets e falha a marcar em {pitch_metrics[fora]['fts_pct']:.1%}. "
+    
+    txt += f"O modelo projeta um xG de **{res['xG_Casa']:.2f}** para o {casa} e **{res['xG_Fora']:.2f}** para o {fora}. "
     if res['Over2.5'] > 0.55:
         txt += f"Com {res['Over2.5']:.1%} de probabilidade para Mais de 2.5 Golos, espera-se um jogo aberto. "
     else:
@@ -281,10 +298,10 @@ else:
     if df is not None and not df.empty:
         stats, med_casa, med_fora = calcular_metricas(df)
         
-        xg_data = {}
+        pitch_metrics = {}
         if pitch_liga_id:
-            with st.spinner('A tentar obter xG...'):
-                xg_data = obter_xg_pitchapi(pitch_liga_id, "2025/2026")
+            with st.spinner('A obter Clean Sheets e FTS da PitchAPI...'):
+                pitch_metrics = obter_metricas_pitchapi(pitch_liga_id, "2025/2026")
         
         col1, col2 = st.columns(2)
         equipas = sorted(list(stats.keys()))
@@ -293,13 +310,13 @@ else:
         
         if st.button("🚀 Gerar Análise Completa", use_container_width=True):
             if casa != fora:
-                res = prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, xg_data)
+                res = prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, pitch_metrics)
                 
                 st.markdown(f"## 🏆 Análise: {casa} vs {fora}")
                 tab1, tab2, tab3 = st.tabs(["📊 Resumo e Odds", "📈 Estatísticas", "⚔️ H2H"])
                 
                 with tab1:
-                    st.info(gerar_narrativa(casa, fora, stats, res))
+                    st.info(gerar_narrativa(casa, fora, stats, res, pitch_metrics))
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Vitória Casa (1)", f"{res['Casa']:.1%}")
                     c2.metric("Empate (X)", f"{res['Empate']:.1%}")
@@ -353,10 +370,20 @@ else:
                     chart_data = pd.DataFrame({'Equipa': [casa, fora], 'xG': [res['xG_Casa'], res['xG_Fora']]}).set_index('Equipa')
                     st.bar_chart(chart_data, color="#00a86b")
                     
-                    st.markdown("### 🛡️ Análise de Clean Sheets")
-                    c_cs1, c_cs2 = st.columns(2)
-                    c_cs1.metric(f"CS em Casa ({casa})", f"{stats[casa]['CS_Casa']:.1%}")
-                    c_cs2.metric(f"CS Fora ({fora})", f"{stats[fora]['CS_Fora']:.1%}")
+                    st.markdown("### 🛡️ Análise Defensiva (PitchAPI)")
+                    if pitch_metrics and casa in pitch_metrics and fora in pitch_metrics:
+                        c_cs1, c_cs2 = st.columns(2)
+                        c_cs1.metric(f"Clean Sheets ({casa})", f"{pitch_metrics[casa]['cs_pct']:.1%}")
+                        c_cs2.metric(f"Clean Sheets ({fora})", f"{pitch_metrics[fora]['cs_pct']:.1%}")
+                        
+                        c_fts1, c_fts2 = st.columns(2)
+                        c_fts1.metric(f"Failed to Score ({casa})", f"{pitch_metrics[casa]['fts_pct']:.1%}")
+                        c_fts2.metric(f"Failed to Score ({fora})", f"{pitch_metrics[fora]['fts_pct']:.1%}")
+                    else:
+                        st.warning("Dados da PitchAPI não disponíveis para esta liga/época. A usar os dados da Football-Data.")
+                        c_cs1, c_cs2 = st.columns(2)
+                        c_cs1.metric(f"CS em Casa ({casa})", f"{stats[casa]['CS_Casa']:.1%}")
+                        c_cs2.metric(f"CS Fora ({fora})", f"{stats[fora]['CS_Fora']:.1%}")
                     
                     st.markdown("### 🧠 Rating Elo e Momento")
                     c_elo1, c_elo2 = st.columns(2)
@@ -391,4 +418,7 @@ else:
                         st.info("Sem dados de H2H recentes.")
 
             else:
-                st.error("⚠️ Não foi possível carregar os dados. Verifica a API Key ou espera 1 minuto (limite de pedidos).")
+                st.error("Seleciona equipas diferentes.")
+                
+    else:
+        st.error("⚠️ Não foi possível carregar os dados. Verifica a API Key ou espera 1 minuto (limite de pedidos).")
