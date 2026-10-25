@@ -9,6 +9,70 @@ st.set_page_config(page_title="AI Football Analytics PRO", layout="wide")
 st.title("⚽ AI Football Analytics - Previsões Avançadas")
 st.markdown("Análise preditiva com Dixon-Coles, Monte Carlo, Elo, Clean Sheets, FTS, Clima e Fase da Época.")
 
+# --- MAPEAMENTO DE EQUIPAS PARA CIDADES (Para o Clima) ---
+# Adiciona aqui as equipas que usas. O código procura a cidade para obter o clima.
+CIDADES_EQUIPAS = {
+    # Espanha
+    "FC Barcelona": "Barcelona",
+    "Real Madrid CF": "Madrid",
+    "Atlético de Madrid": "Madrid",
+    "Sevilla FC": "Sevilla",
+    "Real Betis": "Sevilla",
+    "Valencia CF": "Valencia",
+    "Villarreal CF": "Villarreal",
+    "Athletic Club": "Bilbao",
+    "Real Sociedad": "San Sebastián",
+    # Inglaterra
+    "Manchester United FC": "Manchester",
+    "Manchester City FC": "Manchester",
+    "Liverpool FC": "Liverpool",
+    "Arsenal FC": "London",
+    "Chelsea FC": "London",
+    "Tottenham Hotspur FC": "London",
+    "West Ham United FC": "London",
+    "Newcastle United FC": "Newcastle",
+    "Aston Villa FC": "Birmingham",
+    "Everton FC": "Liverpool",
+    "Leicester City FC": "Leicester",
+    "Leeds United FC": "Leeds",
+    "Nottingham Forest FC": "Nottingham",
+    "AFC Bournemouth": "Bournemouth",
+    "Brighton & Hove Albion FC": "Brighton",
+    "Crystal Palace FC": "London",
+    "Fulham FC": "London",
+    "Brentford FC": "London",
+    "Wolverhampton Wanderers FC": "Wolverhampton",
+    "Southampton FC": "Southampton",
+    "Ipswich Town FC": "Ipswich",
+    # Portugal
+    "SL Benfica": "Lisbon",
+    "FC Porto": "Porto",
+    "Sporting CP": "Lisbon",
+    "SC Braga": "Braga",
+    "Vitória SC": "Guimarães",
+    # Alemanha
+    "FC Bayern München": "Munich",
+    "Borussia Dortmund": "Dortmund",
+    "RB Leipzig": "Leipzig",
+    "Bayer 04 Leverkusen": "Leverkusen",
+    "Eintracht Frankfurt": "Frankfurt",
+    # Itália
+    "Juventus FC": "Turin",
+    "AC Milan": "Milan",
+    "Inter Milan": "Milan",
+    "SSC Napoli": "Naples",
+    "AS Roma": "Rome",
+    "SS Lazio": "Rome",
+    "Atalanta BC": "Bergamo",
+    "ACF Fiorentina": "Florence",
+    # França
+    "Paris Saint-Germain FC": "Paris",
+    "Olympique de Marseille": "Marseille",
+    "Olympique Lyonnais": "Lyon",
+    "AS Monaco FC": "Monaco",
+    "LOSC Lille": "Lille",
+}
+
 # --- BARRA LATERAL ---
 st.sidebar.header("1. Configurações")
 try:
@@ -76,21 +140,30 @@ def obter_dados_fd(codigo_liga, api_key):
                     }
     return df, tabela
 
-# --- CLIMA AUTOMÁTICO (OPEN-METEO) ---
+# --- CLIMA AUTOMÁTICO (OPEN-METEO COM MAPEAMENTO DE CIDADES) ---
 @st.cache_data(ttl=3600)
 def obter_clima_automatico(nome_equipa_casa):
     try:
-        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={nome_equipa_casa}&count=1&language=en&format=json"
+        # 1. Traduzir o nome da equipa para a cidade
+        cidade_pesquisa = CIDADES_EQUIPAS.get(nome_equipa_casa, nome_equipa_casa)
+        
+        # 2. Geocoding: procurar a cidade
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={cidade_pesquisa}&count=1&language=en&format=json"
         geo_res = requests.get(geo_url, timeout=10)
         geo_data = geo_res.json()
+        
         if 'results' not in geo_data or len(geo_data['results']) == 0:
-            return "Normal", "Localização não encontrada"
+            return "Normal", f"Cidade não encontrada para {nome_equipa_casa}"
+            
         lat = geo_data['results'][0]['latitude']
         lon = geo_data['results'][0]['longitude']
         cidade = geo_data['results'][0]['name']
+        
+        # 3. Forecast: previsão de precipitação
         weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=precipitation_sum&timezone=auto&forecast_days=1"
         weather_res = requests.get(weather_url, timeout=10)
         weather_data = weather_res.json()
+        
         if 'daily' in weather_data and 'precipitation_sum' in weather_data['daily']:
             precipitacao = weather_data['daily']['precipitation_sum'][0]
             if precipitacao is not None and precipitacao > 5.0:
@@ -98,8 +171,8 @@ def obter_clima_automatico(nome_equipa_casa):
             else:
                 return "Normal", f"{cidade}: {precipitacao:.1f}mm de chuva prevista"
         return "Normal", "Previsão indisponível"
-    except Exception:
-        return "Normal", "Erro ao obter clima"
+    except Exception as e:
+        return "Normal", f"Erro ao obter clima: {e}"
 
 # --- FASE DA ÉPOCA ---
 def calcular_fase_epoca(jogos_feitos):
@@ -235,15 +308,15 @@ def gerar_matriz_resultados(lambda_casa, lambda_fora, max_golos=5):
     return pd.DataFrame(matriz, index=index, columns=columns)
 
 def gerar_narrativa(casa, fora, stats, res, clima_msg, fase_nome):
-    txt = f"O *{casa}* chega a este jogo com uma forma recente de [{stats[casa]['Forma']}], enquanto o *{fora}* apresenta [{stats[fora]['Forma']}]. "
-    txt += f"Estamos na fase *{fase_nome}* da época. "
+    txt = f"O **{casa}** chega a este jogo com uma forma recente de `[{stats[casa]['Forma']}]`, enquanto o **{fora}** apresenta `[{stats[fora]['Forma']}]`. "
+    txt += f"Estamos na fase **{fase_nome}** da época. "
     
     if "Chuva" in clima_msg:
-        txt += f"Condições climatéricas: *{clima_msg}*. "
+        txt += f"Condições climatéricas: **{clima_msg}**. "
     else:
-        txt += f"Condições climatéricas: *Normais* ({clima_msg}). "
+        txt += f"Condições climatéricas: **Normais** ({clima_msg}). "
     
-    txt += f"O modelo projeta um xG de *{res['xG_Casa']:.2f}* para o {casa} e *{res['xG_Fora']:.2f}* para o {fora}. "
+    txt += f"O modelo projeta um xG de **{res['xG_Casa']:.2f}** para o {casa} e **{res['xG_Fora']:.2f}** para o {fora}. "
     if res['Over2.5'] > 0.55:
         txt += f"Com {res['Over2.5']:.1%} de probabilidade para Mais de 2.5 Golos, espera-se um jogo aberto. "
     else:
@@ -331,13 +404,11 @@ else:
                     st.table(odds_df)
 
                 with tab2:
-                    # --- PAINEL DE CONTEXTO AMBIENTAL ---
                     st.markdown("### 🌍 Contexto Ambiental e Fase da Época")
                     ctx1, ctx2 = st.columns(2)
-                    ctx1.info(f"*📍 Clima:* {clima_msg}")
-                    ctx2.info(f"*📅 Fase da Época:* {fase_nome}")
+                    ctx1.info(f"**📍 Clima:** {clima_msg}")
+                    ctx2.info(f"**📅 Fase da Época:** {fase_nome}")
                     st.markdown("---")
-                    # -------------------------------------
 
                     st.markdown("### 📊 Comparação de Força (xG Esperado)")
                     chart_data = pd.DataFrame({'Equipa': [casa, fora], 'xG': [res['xG_Casa'], res['xG_Fora']]}).set_index('Equipa')
