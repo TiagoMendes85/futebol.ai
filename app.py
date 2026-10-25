@@ -40,7 +40,7 @@ CIDADES_EQUIPAS = {
 
     "Wolverhampton Wanderers FC": "Wolverhampton", "Southampton FC": "Southampton", "Ipswich Town FC": "Ipswich",
 
-    "SL Benfica": "Lisbon", "FC Porto": "Porto", "Sporting CP": "Lisbon",
+    "SL Benfica": "Lisbon", "FC Porto": "Porto", "Sporting Clube de Portugal": "Lisbon",
 
     "SC Braga": "Braga", "Vitória SC": "Guimarães", "FC Bayern München": "Munich",
 
