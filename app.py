@@ -7,7 +7,7 @@ import math
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="AI Football Analytics PRO", layout="wide")
 st.title("⚽ AI Football Analytics - Previsões Avançadas")
-st.markdown("Análise preditiva com Dixon-Coles, Monte Carlo, Elo, Clean Sheets, FTS e Forma.")
+st.markdown("Análise preditiva com Dixon-Coles, Monte Carlo, Elo, Clean Sheets, FTS, Clima e Fase da Época.")
 
 # --- BARRA LATERAL ---
 st.sidebar.header("1. Configurações")
@@ -76,13 +76,45 @@ def obter_dados_fd(codigo_liga, api_key):
                     }
     return df, tabela
 
+# --- CLIMA AUTOMÁTICO (OPEN-METEO) ---
+@st.cache_data(ttl=3600)
+def obter_clima_automatico(nome_equipa_casa):
+    try:
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={nome_equipa_casa}&count=1&language=en&format=json"
+        geo_res = requests.get(geo_url, timeout=10)
+        geo_data = geo_res.json()
+        if 'results' not in geo_data or len(geo_data['results']) == 0:
+            return "Normal", "Localização não encontrada"
+        lat = geo_data['results'][0]['latitude']
+        lon = geo_data['results'][0]['longitude']
+        cidade = geo_data['results'][0]['name']
+        weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=precipitation_sum&timezone=auto&forecast_days=1"
+        weather_res = requests.get(weather_url, timeout=10)
+        weather_data = weather_res.json()
+        if 'daily' in weather_data and 'precipitation_sum' in weather_data['daily']:
+            precipitacao = weather_data['daily']['precipitation_sum'][0]
+            if precipitacao is not None and precipitacao > 5.0:
+                return "Chuva Forte / Mau Tempo", f"{cidade}: {precipitacao:.1f}mm de chuva prevista"
+            else:
+                return "Normal", f"{cidade}: {precipitacao:.1f}mm de chuva prevista"
+        return "Normal", "Previsão indisponível"
+    except Exception:
+        return "Normal", "Erro ao obter clima"
+
+# --- FASE DA ÉPOCA ---
+def calcular_fase_epoca(jogos_feitos):
+    if jogos_feitos < 13:
+        return "Início", 1.0
+    elif jogos_feitos <= 25:
+        return "Meio", 1.0
+    else:
+        return "Fim", 0.95
+
 # --- MOTOR MATEMÁTICO ---
 def calcular_metricas(df):
     if df.empty: return None, None, None
     
     df = df.sort_values('Data')
-    
-    # Elo
     elo_ratings = {equipa: 1500 for equipa in set(df['Casa']).union(set(df['Fora']))}
     K = 25
     for _, jogo in df.iterrows():
@@ -95,10 +127,8 @@ def calcular_metricas(df):
         elo_ratings[fora] += K * ((1 - res) - (1 - expectativa_casa))
     
     df['Peso'] = df.index.map(lambda x: 2.5 if x >= len(df) - 15 else 1.0)
-    
     media_golos_casa = np.average(df['Golos_Casa'], weights=df['Peso'])
     media_golos_fora = np.average(df['Golos_Fora'], weights=df['Peso'])
-    
     if media_golos_casa == 0: media_golos_casa = 1.4
     if media_golos_fora == 0: media_golos_fora = 1.2
     
@@ -108,7 +138,6 @@ def calcular_metricas(df):
     for equipa in equipas:
         jogos_casa = df[df['Casa'] == equipa]
         jogos_fora = df[df['Fora'] == equipa]
-        
         jogos_c = len(jogos_casa)
         jogos_f = len(jogos_fora)
         peso_c = jogos_c / (jogos_c + 5.0)
@@ -124,13 +153,11 @@ def calcular_metricas(df):
         ataque_fora = (ataque_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         defesa_fora = (defesa_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         
-        # Clean Sheets e Failed to Score (calculados a partir dos resultados da Football-Data)
         cs_casa = (jogos_casa['Golos_Fora'] == 0).sum() / jogos_c if jogos_c > 0 else 0.25
         cs_fora = (jogos_fora['Golos_Casa'] == 0).sum() / jogos_f if jogos_f > 0 else 0.25
         fts_casa = (jogos_casa['Golos_Casa'] == 0).sum() / jogos_c if jogos_c > 0 else 0.25
         fts_fora = (jogos_fora['Golos_Fora'] == 0).sum() / jogos_f if jogos_f > 0 else 0.25
             
-        # Forma e Fator Momento
         ultimos_jogos = df[(df['Casa'] == equipa) | (df['Fora'] == equipa)].tail(5)
         forma = ""
         pontos_forma = 0
@@ -147,34 +174,40 @@ def calcular_metricas(df):
         fator_momento = 0.8 + (pontos_forma / 15.0) * 0.4
 
         stats[equipa] = {
-            'Ataque_Casa': ataque_casa * fator_momento, 
-            'Defesa_Casa': defesa_casa / fator_momento,
-            'Ataque_Fora': ataque_fora * fator_momento, 
-            'Defesa_Fora': defesa_fora / fator_momento,
+            'Ataque_Casa': ataque_casa * fator_momento, 'Defesa_Casa': defesa_casa / fator_momento,
+            'Ataque_Fora': ataque_fora * fator_momento, 'Defesa_Fora': defesa_fora / fator_momento,
             'Forma': forma.strip(), 'Jogos_Casa': jogos_c, 'Jogos_Fora': jogos_f,
-            'CS_Casa': cs_casa, 'CS_Fora': cs_fora,
-            'FTS_Casa': fts_casa, 'FTS_Fora': fts_fora,
-            'Elo': elo_ratings[equipa],
-            'Fator_Momento': fator_momento
+            'CS_Casa': cs_casa, 'CS_Fora': cs_fora, 'FTS_Casa': fts_casa, 'FTS_Fora': fts_fora,
+            'Elo': elo_ratings[equipa], 'Fator_Momento': fator_momento
         }
     return stats, media_golos_casa, media_golos_fora
 
-def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
+def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, clima, fase_epoca_fator, sims=10000):
     lambda_casa = stats[casa]['Ataque_Casa'] * stats[fora]['Defesa_Fora'] * med_casa
     lambda_fora = stats[fora]['Ataque_Fora'] * stats[casa]['Defesa_Casa'] * med_fora
     
-    # Ajuste com Clean Sheets (a equipa que sofre poucos golos reduz o lambda do adversário)
+    # Clean Sheet e FTS
     lambda_casa *= (1.0 - (stats[fora]['CS_Fora'] * 0.4))
     lambda_fora *= (1.0 - (stats[casa]['CS_Casa'] * 0.4))
-
-    # Ajuste com Failed to Score (a equipa que falha muito a marcar tem o lambda reduzido)
     lambda_casa *= (1.0 - (stats[casa]['FTS_Casa'] * 0.3))
     lambda_fora *= (1.0 - (stats[fora]['FTS_Fora'] * 0.3))
 
-    # Ajuste com Elo
+    # Elo
     diff_elo = stats[casa]['Elo'] - stats[fora]['Elo']
     lambda_casa *= (1 + (diff_elo / 1000))
     lambda_fora *= (1 - (diff_elo / 1000))
+
+    # Clima
+    if clima == "Chuva Forte / Mau Tempo":
+        lambda_casa *= 0.85
+        lambda_fora *= 0.85
+        st.caption("🌧️ Fator Chuva aplicado: -15% nos golos esperados.")
+
+    # Fase da Época
+    lambda_casa *= fase_epoca_fator
+    lambda_fora *= fase_epoca_fator
+    if fase_epoca_fator < 1.0:
+        st.caption("📅 Fase Final da Época aplicada: -5% nos golos esperados.")
 
     golos_casa_sim = np.random.poisson(lambda_casa, sims)
     golos_fora_sim = np.random.poisson(lambda_fora, sims)
@@ -191,8 +224,7 @@ def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
     return {
         'Casa': p_casa, 'Empate': p_empate, 'Fora': p_fora, 
         'Over1.5': p_over15, 'Over2.5': p_over25, 'Over3.5': p_over35, 
-        'BTTS': p_btts,
-        'xG_Casa': lambda_casa, 'xG_Fora': lambda_fora
+        'BTTS': p_btts, 'xG_Casa': lambda_casa, 'xG_Fora': lambda_fora
     }
 
 def gerar_matriz_resultados(lambda_casa, lambda_fora, max_golos=5):
@@ -206,9 +238,13 @@ def gerar_matriz_resultados(lambda_casa, lambda_fora, max_golos=5):
     columns = [f"{j} Golos (Fora)" for j in range(max_golos)]
     return pd.DataFrame(matriz, index=index, columns=columns)
 
-def gerar_narrativa(casa, fora, stats, res):
-    txt = f"O **{casa}** chega a este jogo com uma forma recente de `[{stats[casa]['Forma']}]`, enquanto o **{fora}** apresenta `[{stats[fora]['Forma']}]`. "
-    txt += f"O modelo projeta um xG de **{res['xG_Casa']:.2f}** para o {casa} e **{res['xG_Fora']:.2f}** para o {fora}. "
+def gerar_narrativa(casa, fora, stats, res, clima_msg, fase_nome):
+    txt = f"O *{casa}* chega a este jogo com uma forma recente de [{stats[casa]['Forma']}], enquanto o *{fora}* apresenta [{stats[fora]['Forma']}]. "
+    txt += f"Estamos na fase *{fase_nome}* da época. "
+    if "Chuva" in clima_msg:
+        txt += f"Condições climatéricas: *{clima_msg}*. "
+    
+    txt += f"O modelo projeta um xG de *{res['xG_Casa']:.2f}* para o {casa} e *{res['xG_Fora']:.2f}* para o {fora}. "
     if res['Over2.5'] > 0.55:
         txt += f"Com {res['Over2.5']:.1%} de probabilidade para Mais de 2.5 Golos, espera-se um jogo aberto. "
     else:
@@ -236,13 +272,20 @@ else:
         
         if st.button("🚀 Gerar Análise Completa", use_container_width=True):
             if casa != fora:
-                res = prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora)
+                # Obter clima automaticamente
+                clima, clima_msg = obter_clima_automatico(casa)
+                
+                # Calcular fase da época
+                jogos_feitos_casa = tabela[casa]['Jogos_Feitos'] if tabela and casa in tabela else 10
+                fase_nome, fase_fator = calcular_fase_epoca(jogos_feitos_casa)
+                
+                res = prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, clima, fase_fator)
                 
                 st.markdown(f"## 🏆 Análise: {casa} vs {fora}")
                 tab1, tab2, tab3 = st.tabs(["📊 Resumo e Odds", "📈 Estatísticas", "⚔️ H2H"])
                 
                 with tab1:
-                    st.info(gerar_narrativa(casa, fora, stats, res))
+                    st.info(gerar_narrativa(casa, fora, stats, res, clima_msg, fase_nome))
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Vitória Casa (1)", f"{res['Casa']:.1%}")
                     c2.metric("Empate (X)", f"{res['Empate']:.1%}")
@@ -296,7 +339,7 @@ else:
                     chart_data = pd.DataFrame({'Equipa': [casa, fora], 'xG': [res['xG_Casa'], res['xG_Fora']]}).set_index('Equipa')
                     st.bar_chart(chart_data, color="#00a86b")
                     
-                    st.markdown("### 🛡️ Análise Defensiva (Football-Data)")
+                    st.markdown("### 🛡️ Análise Defensiva")
                     c_cs1, c_cs2 = st.columns(2)
                     c_cs1.metric(f"Clean Sheets em Casa ({casa})", f"{stats[casa]['CS_Casa']:.1%}")
                     c_cs2.metric(f"Clean Sheets Fora ({fora})", f"{stats[fora]['CS_Fora']:.1%}")
