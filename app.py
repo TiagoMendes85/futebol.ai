@@ -3,40 +3,35 @@ import requests
 import pandas as pd
 import numpy as np
 import math
-from pitchapi import PitchAPI
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="AI Football Analytics PRO", layout="wide")
 st.title("⚽ AI Football Analytics - Previsões Avançadas")
-st.markdown("Análise preditiva com Dixon-Coles, Monte Carlo, Elo, Clean Sheets, FTS e xG.")
+st.markdown("Análise preditiva com Dixon-Coles, Monte Carlo, Elo, Clean Sheets, FTS e Forma.")
 
 # --- BARRA LATERAL ---
 st.sidebar.header("1. Configurações")
 try:
     API_KEY = st.secrets["API_KEY"]
-    PITCHAPI_KEY = st.secrets.get("PITCHAPI_KEY", "")
-    st.sidebar.success("✅ Chaves carregadas")
+    st.sidebar.success("✅ Chave carregada")
 except:
     API_KEY = st.sidebar.text_input("API Key (Football-Data)", type="password")
-    PITCHAPI_KEY = st.sidebar.text_input("API Key (PitchAPI)", type="password")
 
 LIGAS_DISPONIVEIS = {
-    "Premier League (Inglaterra)": {"fd": "PL", "pitch": "l_0bfbkO"},
-    "Championship (2ª Ing.)": {"fd": "ELC", "pitch": None},
-    "La Liga (Espanha)": {"fd": "PD", "pitch": None},
-    "Serie A (Itália)": {"fd": "SA", "pitch": None},
-    "Bundesliga (Alemanha)": {"fd": "BL1", "pitch": None},
-    "Ligue 1 (França)": {"fd": "FL1", "pitch": None},
-    "Primeira Liga (Portugal)": {"fd": "PPL", "pitch": None},
-    "Eredivisie (Holanda)": {"fd": "DED", "pitch": None},
-    "Brasileirão (Brasil)": {"fd": "BSA", "pitch": None},
-    "Champions League": {"fd": "CL", "pitch": None}
+    "Premier League (Inglaterra)": "PL",
+    "Championship (2ª Ing.)": "ELC",
+    "La Liga (Espanha)": "PD",
+    "Serie A (Itália)": "SA",
+    "Bundesliga (Alemanha)": "BL1",
+    "Ligue 1 (França)": "FL1",
+    "Primeira Liga (Portugal)": "PPL",
+    "Eredivisie (Holanda)": "DED",
+    "Brasileirão (Brasil)": "BSA",
+    "Champions League": "CL"
 }
 
 liga_nome = st.sidebar.selectbox("🏆 Escolhe o Campeonato", list(LIGAS_DISPONIVEIS.keys()))
-liga_info = LIGAS_DISPONIVEIS[liga_nome]
-liga_codigo = liga_info["fd"]
-pitch_liga_id = liga_info["pitch"]
+liga_codigo = LIGAS_DISPONIVEIS[liga_nome]
 
 # --- FUNÇÕES DE DADOS ---
 @st.cache_data(ttl=600)
@@ -80,62 +75,6 @@ def obter_dados_fd(codigo_liga, api_key):
                         'Jogos_Feitos': entry['playedGames']
                     }
     return df, tabela
-
-@st.cache_data(ttl=86400)
-def obter_metricas_pitchapi(liga_id, epoca):
-    """Vai buscar jogos à PitchAPI e calcula Clean Sheets e Failed to Score."""
-    if not liga_id or not PITCHAPI_KEY:
-        return {}
-    try:
-        with PitchAPI(api_key=PITCHAPI_KEY) as client:
-            matches = client.leagues.matches(liga_id, season=epoca, status="all")
-            
-            # Dicionário para acumular estatísticas
-            stats = {}
-            
-            for m in matches.matches:
-                # Só processa jogos que já foram jogados
-                if m.score_home is None or m.score_away is None:
-                    continue
-                
-                home_name = m.home_team.name
-                away_name = m.away_team.name
-                home_goals = m.score_home
-                away_goals = m.score_away
-                
-                # Inicializa a equipa se não existir
-                if home_name not in stats:
-                    stats[home_name] = {'jogos': 0, 'clean_sheets': 0, 'failed_to_score': 0}
-                if away_name not in stats:
-                    stats[away_name] = {'jogos': 0, 'clean_sheets': 0, 'failed_to_score': 0}
-                
-                # Atualiza estatísticas da equipa da casa
-                stats[home_name]['jogos'] += 1
-                if away_goals == 0:
-                    stats[home_name]['clean_sheets'] += 1
-                if home_goals == 0:
-                    stats[home_name]['failed_to_score'] += 1
-                
-                # Atualiza estatísticas da equipa de fora
-                stats[away_name]['jogos'] += 1
-                if home_goals == 0:
-                    stats[away_name]['clean_sheets'] += 1
-                if away_goals == 0:
-                    stats[away_name]['failed_to_score'] += 1
-            
-            # Calcula as percentagens
-            medias = {}
-            for equipa, dados in stats.items():
-                if dados['jogos'] > 0:
-                    medias[equipa] = {
-                        'cs_pct': dados['clean_sheets'] / dados['jogos'],
-                        'fts_pct': dados['failed_to_score'] / dados['jogos'],
-                        'jogos': dados['jogos']
-                    }
-            return medias
-    except Exception as e:
-        st.warning(f"Aviso PitchAPI: {e}")
-        return {}
 
 # --- MOTOR MATEMÁTICO ---
 def calcular_metricas(df):
@@ -185,9 +124,11 @@ def calcular_metricas(df):
         ataque_fora = (ataque_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         defesa_fora = (defesa_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         
-        # Fallback para Clean Sheet (Football-Data)
+        # Clean Sheets e Failed to Score (calculados a partir dos resultados da Football-Data)
         cs_casa = (jogos_casa['Golos_Fora'] == 0).sum() / jogos_c if jogos_c > 0 else 0.25
         cs_fora = (jogos_fora['Golos_Casa'] == 0).sum() / jogos_f if jogos_f > 0 else 0.25
+        fts_casa = (jogos_casa['Golos_Casa'] == 0).sum() / jogos_c if jogos_c > 0 else 0.25
+        fts_fora = (jogos_fora['Golos_Fora'] == 0).sum() / jogos_f if jogos_f > 0 else 0.25
             
         # Forma e Fator Momento
         ultimos_jogos = df[(df['Casa'] == equipa) | (df['Fora'] == equipa)].tail(5)
@@ -212,30 +153,25 @@ def calcular_metricas(df):
             'Defesa_Fora': defesa_fora / fator_momento,
             'Forma': forma.strip(), 'Jogos_Casa': jogos_c, 'Jogos_Fora': jogos_f,
             'CS_Casa': cs_casa, 'CS_Fora': cs_fora,
+            'FTS_Casa': fts_casa, 'FTS_Fora': fts_fora,
             'Elo': elo_ratings[equipa],
             'Fator_Momento': fator_momento
         }
     return stats, media_golos_casa, media_golos_fora
 
-def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, pitch_metrics, sims=10000):
+def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
     lambda_casa = stats[casa]['Ataque_Casa'] * stats[fora]['Defesa_Fora'] * med_casa
     lambda_fora = stats[fora]['Ataque_Fora'] * stats[casa]['Defesa_Casa'] * med_fora
     
-    # --- INTEGRAÇÃO CLEAN SHEET E FTS DA PITCHAPI ---
-    if pitch_metrics:
-        casa_metrics = pitch_metrics.get(casa)
-        fora_metrics = pitch_metrics.get(fora)
-        
-        if casa_metrics and fora_metrics:
-            # Ajuste com Clean Sheet (se a equipa tem muitos CS, o adversário marca menos)
-            lambda_fora *= (1.0 - (casa_metrics['cs_pct'] * 0.4))
-            lambda_casa *= (1.0 - (fora_metrics['cs_pct'] * 0.4))
-            
-            # Ajuste com Failed to Score (se a equipa falha muito, marca menos)
-            lambda_casa *= (1.0 - (casa_metrics['fts_pct'] * 0.3))
-            lambda_fora *= (1.0 - (fora_metrics['fts_pct'] * 0.3))
+    # Ajuste com Clean Sheets (a equipa que sofre poucos golos reduz o lambda do adversário)
+    lambda_casa *= (1.0 - (stats[fora]['CS_Fora'] * 0.4))
+    lambda_fora *= (1.0 - (stats[casa]['CS_Casa'] * 0.4))
 
-    # Elo
+    # Ajuste com Failed to Score (a equipa que falha muito a marcar tem o lambda reduzido)
+    lambda_casa *= (1.0 - (stats[casa]['FTS_Casa'] * 0.3))
+    lambda_fora *= (1.0 - (stats[fora]['FTS_Fora'] * 0.3))
+
+    # Ajuste com Elo
     diff_elo = stats[casa]['Elo'] - stats[fora]['Elo']
     lambda_casa *= (1 + (diff_elo / 1000))
     lambda_fora *= (1 - (diff_elo / 1000))
@@ -270,13 +206,8 @@ def gerar_matriz_resultados(lambda_casa, lambda_fora, max_golos=5):
     columns = [f"{j} Golos (Fora)" for j in range(max_golos)]
     return pd.DataFrame(matriz, index=index, columns=columns)
 
-def gerar_narrativa(casa, fora, stats, res, pitch_metrics):
+def gerar_narrativa(casa, fora, stats, res):
     txt = f"O **{casa}** chega a este jogo com uma forma recente de `[{stats[casa]['Forma']}]`, enquanto o **{fora}** apresenta `[{stats[fora]['Forma']}]`. "
-    
-    if pitch_metrics and casa in pitch_metrics and fora in pitch_metrics:
-        txt += f"Na PitchAPI, o {casa} tem {pitch_metrics[casa]['cs_pct']:.1%} de Clean Sheets e falha a marcar em {pitch_metrics[casa]['fts_pct']:.1%} dos jogos. "
-        txt += f"O {fora} tem {pitch_metrics[fora]['cs_pct']:.1%} de Clean Sheets e falha a marcar em {pitch_metrics[fora]['fts_pct']:.1%}. "
-    
     txt += f"O modelo projeta um xG de **{res['xG_Casa']:.2f}** para o {casa} e **{res['xG_Fora']:.2f}** para o {fora}. "
     if res['Over2.5'] > 0.55:
         txt += f"Com {res['Over2.5']:.1%} de probabilidade para Mais de 2.5 Golos, espera-se um jogo aberto. "
@@ -298,11 +229,6 @@ else:
     if df is not None and not df.empty:
         stats, med_casa, med_fora = calcular_metricas(df)
         
-        pitch_metrics = {}
-        if pitch_liga_id:
-            with st.spinner('A obter Clean Sheets e FTS da PitchAPI...'):
-                pitch_metrics = obter_metricas_pitchapi(pitch_liga_id, "2025/2026")
-        
         col1, col2 = st.columns(2)
         equipas = sorted(list(stats.keys()))
         casa = col1.selectbox("🏠 Equipa da Casa", equipas)
@@ -310,13 +236,13 @@ else:
         
         if st.button("🚀 Gerar Análise Completa", use_container_width=True):
             if casa != fora:
-                res = prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, pitch_metrics)
+                res = prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora)
                 
                 st.markdown(f"## 🏆 Análise: {casa} vs {fora}")
                 tab1, tab2, tab3 = st.tabs(["📊 Resumo e Odds", "📈 Estatísticas", "⚔️ H2H"])
                 
                 with tab1:
-                    st.info(gerar_narrativa(casa, fora, stats, res, pitch_metrics))
+                    st.info(gerar_narrativa(casa, fora, stats, res))
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Vitória Casa (1)", f"{res['Casa']:.1%}")
                     c2.metric("Empate (X)", f"{res['Empate']:.1%}")
@@ -370,20 +296,14 @@ else:
                     chart_data = pd.DataFrame({'Equipa': [casa, fora], 'xG': [res['xG_Casa'], res['xG_Fora']]}).set_index('Equipa')
                     st.bar_chart(chart_data, color="#00a86b")
                     
-                    st.markdown("### 🛡️ Análise Defensiva (PitchAPI)")
-                    if pitch_metrics and casa in pitch_metrics and fora in pitch_metrics:
-                        c_cs1, c_cs2 = st.columns(2)
-                        c_cs1.metric(f"Clean Sheets ({casa})", f"{pitch_metrics[casa]['cs_pct']:.1%}")
-                        c_cs2.metric(f"Clean Sheets ({fora})", f"{pitch_metrics[fora]['cs_pct']:.1%}")
-                        
-                        c_fts1, c_fts2 = st.columns(2)
-                        c_fts1.metric(f"Failed to Score ({casa})", f"{pitch_metrics[casa]['fts_pct']:.1%}")
-                        c_fts2.metric(f"Failed to Score ({fora})", f"{pitch_metrics[fora]['fts_pct']:.1%}")
-                    else:
-                        st.warning("Dados da PitchAPI não disponíveis para esta liga/época. A usar os dados da Football-Data.")
-                        c_cs1, c_cs2 = st.columns(2)
-                        c_cs1.metric(f"CS em Casa ({casa})", f"{stats[casa]['CS_Casa']:.1%}")
-                        c_cs2.metric(f"CS Fora ({fora})", f"{stats[fora]['CS_Fora']:.1%}")
+                    st.markdown("### 🛡️ Análise Defensiva (Football-Data)")
+                    c_cs1, c_cs2 = st.columns(2)
+                    c_cs1.metric(f"Clean Sheets em Casa ({casa})", f"{stats[casa]['CS_Casa']:.1%}")
+                    c_cs2.metric(f"Clean Sheets Fora ({fora})", f"{stats[fora]['CS_Fora']:.1%}")
+                    
+                    c_fts1, c_fts2 = st.columns(2)
+                    c_fts1.metric(f"Failed to Score ({casa})", f"{stats[casa]['FTS_Casa']:.1%}")
+                    c_fts2.metric(f"Failed to Score ({fora})", f"{stats[fora]['FTS_Fora']:.1%}")
                     
                     st.markdown("### 🧠 Rating Elo e Momento")
                     c_elo1, c_elo2 = st.columns(2)
