@@ -39,7 +39,7 @@ liga_codigo = liga_info["fd"]
 pitch_liga_id = liga_info["pitch"]
 
 # --- FUNÇÕES DE DADOS ---
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=600) # Reduzi o cache para 10 minutos para testares melhor
 def obter_dados_fd(codigo_liga, api_key):
     headers = {'X-Auth-Token': api_key}
     url_matches = f'https://api.football-data.org/v4/competitions/{codigo_liga}/matches'
@@ -57,9 +57,10 @@ def obter_dados_fd(codigo_liga, api_key):
     jogos = []
     for match in dados_matches['matches']:
         if match['status'] == 'FINISHED':
+            # PROTEÇÃO MÁXIMA: Só adiciona o jogo se os golos forem números reais
             gc = match['score']['fullTime']['home']
             gf = match['score']['fullTime']['away']
-            # PROTEÇÃO: Só adiciona se os golos não forem nulos
+            
             if gc is not None and gf is not None:
                 jogos.append({
                     'Data': pd.to_datetime(match['utcDate']).date(),
@@ -117,7 +118,6 @@ def obter_xg_pitchapi(liga_id, epoca):
                     medias[equipa] = {'xg_medio': dados['xg'] / dados['jogos'], 'xga_medio': dados['xga'] / dados['jogos']}
             return medias
     except Exception as e:
-        st.warning(f"Aviso xG PitchAPI: {e}")
         return {}
 
 # --- MOTOR MATEMÁTICO ---
@@ -160,7 +160,6 @@ def calcular_metricas(df):
         peso_c = jogos_c / (jogos_c + 5.0)
         peso_f = jogos_f / (jogos_f + 5.0)
         
-        # Ataque e Defesa baseados apenas em jogos em casa/fora
         ataque_casa_bruto = np.average(jogos_casa['Golos_Casa'], weights=jogos_casa['Peso']) / media_golos_casa if jogos_c > 0 else 1.0
         defesa_casa_bruto = np.average(jogos_casa['Golos_Fora'], weights=jogos_casa['Peso']) / media_golos_fora if jogos_c > 0 else 1.0
         ataque_fora_bruto = np.average(jogos_fora['Golos_Fora'], weights=jogos_fora['Peso']) / media_golos_fora if jogos_f > 0 else 1.0
@@ -201,22 +200,18 @@ def calcular_metricas(df):
     return stats, media_golos_casa, media_golos_fora
 
 def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, xg_data, sims=10000):
-    # Baseia-se na força da casa em casa vs defesa do fora fora
     lambda_casa = stats[casa]['Ataque_Casa'] * stats[fora]['Defesa_Fora'] * med_casa
     lambda_fora = stats[fora]['Ataque_Fora'] * stats[casa]['Defesa_Casa'] * med_fora
     
-    # Fator Clean Sheet
     fator_cs_casa = 1.0 - (stats[fora]['CS_Fora'] * 0.3)
     fator_cs_fora = 1.0 - (stats[casa]['CS_Casa'] * 0.3)
     lambda_casa *= fator_cs_casa
     lambda_fora *= fator_cs_fora
 
-    # Fator Elo
     diff_elo = stats[casa]['Elo'] - stats[fora]['Elo']
     lambda_casa *= (1 + (diff_elo / 1000))
     lambda_fora *= (1 - (diff_elo / 1000))
 
-    # Fator xG (se existir)
     if xg_data:
         xg_casa = xg_data.get(casa)
         xg_fora = xg_data.get(fora)
