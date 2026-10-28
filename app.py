@@ -7,14 +7,15 @@ import math
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="AI Football Analytics PRO", layout="wide")
 st.title("⚽ AI Football Analytics - Previsões Avançadas")
-st.markdown("Análise preditiva pura (Dixon-Coles/Monte Carlo) com contexto informativo.")
+st.markdown("Análise preditiva com peso elevado na Forma Recente e Dixon-Coles.")
 
 CIDADES_EQUIPAS = {
     "FC Barcelona": "Barcelona", "Real Madrid CF": "Madrid", "Manchester United FC": "Manchester",
     "Manchester City FC": "Manchester", "Liverpool FC": "Liverpool", "Arsenal FC": "London",
     "Chelsea FC": "London", "Tottenham Hotspur FC": "London", "SL Benfica": "Lisbon",
     "FC Porto": "Porto", "Sporting CP": "Lisbon", "SC Braga": "Braga", "AFC Bournemouth": "Bournemouth",
-    "Newcastle United FC": "Newcastle", "Aston Villa FC": "Birmingham", "Brighton & Hove Albion FC": "Brighton"
+    "Newcastle United FC": "Newcastle", "Aston Villa FC": "Birmingham", "Brighton & Hove Albion FC": "Brighton",
+    "Parma Calcio 1913": "Parma", "Udinese Calcio": "Udine"
 }
 
 st.sidebar.header("1. Configurações")
@@ -78,13 +79,12 @@ def obter_clima_automatico(nome_equipa):
 def calcular_fase_epoca(jogos_feitos):
     if jogos_feitos < 13: return "Início", 1.0
     elif jogos_feitos <= 25: return "Meio", 1.0
-    else: return "Fim", 1.0 # Removemos a penalização, fica só informativo
+    else: return "Fim", 0.98
 
 def calcular_metricas(df):
     if df.empty: return None, None, None
     df = df.sort_values('Data')
     
-    # Elo (Apenas para contexto, não afeta o xG diretamente)
     elo_ratings = {equipa: 1500 for equipa in set(df['Casa']).union(set(df['Fora']))}
     K = 25
     for _, jogo in df.iterrows():
@@ -96,7 +96,6 @@ def calcular_metricas(df):
         elo_ratings[casa] += K * (res - expectativa_casa)
         elo_ratings[fora] += K * ((1 - res) - (1 - expectativa_casa))
 
-    # Peso das tendências (últimos 15 jogos valem mais)
     df['Peso'] = df.index.map(lambda x: 2.5 if x >= len(df) - 15 else 1.0)
     media_golos_casa = np.average(df['Golos_Casa'], weights=df['Peso'])
     media_golos_fora = np.average(df['Golos_Fora'], weights=df['Peso'])
@@ -114,15 +113,35 @@ def calcular_metricas(df):
         peso_c = jogos_c / (jogos_c + 5.0)
         peso_f = jogos_f / (jogos_f + 5.0)
         
+        # Base Estatística Histórica
         ataque_casa_bruto = np.average(jogos_casa['Golos_Casa'], weights=jogos_casa['Peso']) / media_golos_casa if jogos_c > 0 else 1.0
         defesa_casa_bruto = np.average(jogos_casa['Golos_Fora'], weights=jogos_casa['Peso']) / media_golos_fora if jogos_c > 0 else 1.0
         ataque_fora_bruto = np.average(jogos_fora['Golos_Fora'], weights=jogos_fora['Peso']) / media_golos_fora if jogos_f > 0 else 1.0
         defesa_fora_bruto = np.average(jogos_fora['Golos_Casa'], weights=jogos_fora['Peso']) / media_golos_casa if jogos_f > 0 else 1.0
         
-        ataque_casa = (ataque_casa_bruto * peso_c) + (1.0 * (1 - peso_c))
-        defesa_casa = (defesa_casa_bruto * peso_c) + (1.0 * (1 - peso_c))
-        ataque_fora = (ataque_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
-        defesa_fora = (defesa_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
+        # --- NOVO: PESO DA FORMA RECENTE (ÚLTIMOS 5 JOGOS) ---
+        recentes_casa = df[df['Casa'] == equipa].tail(5)
+        recentes_fora = df[df['Fora'] == equipa].tail(5)
+        
+        # Média de golos marcados e sofridos nos últimos 5 jogos
+        golos_marcados_recente_casa = recentes_casa['Golos_Casa'].mean() if not recentes_casa.empty else 1.0
+        golos_sofridos_recente_casa = recentes_casa['Golos_Fora'].mean() if not recentes_casa.empty else 1.0
+        
+        golos_marcados_recente_fora = recentes_fora['Golos_Fora'].mean() if not recentes_fora.empty else 1.0
+        golos_sofridos_recente_fora = recentes_fora['Golos_Casa'].mean() if not recentes_fora.empty else 1.0
+        
+        # O modelo final de ataque e defesa mistura o histórico com a forma recente (70% peso no recente)
+        ataque_casa_final = (ataque_casa_bruto * 0.3) + ((golos_marcados_recente_casa / media_golos_casa) * 0.7)
+        defesa_casa_final = (defesa_casa_bruto * 0.3) + ((golos_sofridos_recente_casa / media_golos_fora) * 0.7)
+        
+        ataque_fora_final = (ataque_fora_bruto * 0.3) + ((golos_marcados_recente_fora / media_golos_fora) * 0.7)
+        defesa_fora_final = (defesa_fora_bruto * 0.3) + ((golos_sofridos_recente_fora / media_golos_casa) * 0.7)
+
+        # Normalização com o peso dos jogos
+        ataque_casa = (ataque_casa_final * peso_c) + (1.0 * (1 - peso_c))
+        defesa_casa = (defesa_casa_final * peso_c) + (1.0 * (1 - peso_c))
+        ataque_fora = (ataque_fora_final * peso_f) + (1.0 * (1 - peso_f))
+        defesa_fora = (defesa_fora_final * peso_f) + (1.0 * (1 - peso_f))
         
         cs_casa = (jogos_casa['Golos_Fora'] == 0).sum() / jogos_c if jogos_c > 0 else 0.25
         cs_fora = (jogos_fora['Golos_Casa'] == 0).sum() / jogos_f if jogos_f > 0 else 0.25
@@ -142,8 +161,8 @@ def calcular_metricas(df):
                 elif jogo['Golos_Fora'] == jogo['Golos_Casa']: forma += "E "; pontos_forma += 1
                 else: forma += "D "
         
-        # Fator Momento (Peso máximo de 1.1 em vez de 1.2 para não distorcer muito)
-        fator_momento = 0.9 + (pontos_forma / 15.0) * 0.2
+        # Fator Momento agora vai de 0.7 a 1.3 (mais agressivo)
+        fator_momento = 0.7 + (pontos_forma / 15.0) * 0.6
 
         stats[equipa] = {
             'Ataque_Casa': ataque_casa * fator_momento, 'Defesa_Casa': defesa_casa / fator_momento,
@@ -155,15 +174,13 @@ def calcular_metricas(df):
     return stats, media_golos_casa, media_golos_fora
 
 def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
-    # MATEMÁTICA PURA: Ataque vs Defesa e Média da Liga
     lambda_casa = stats[casa]['Ataque_Casa'] * stats[fora]['Defesa_Fora'] * med_casa
     lambda_fora = stats[fora]['Ataque_Fora'] * stats[casa]['Defesa_Casa'] * med_fora
     
-    # Ajuste leve de Clean Sheet/FTS (apenas 15% de impacto em vez de 40%)
-    lambda_casa *= (1.0 - (stats[fora]['CS_Fora'] * 0.15))
-    lambda_fora *= (1.0 - (stats[casa]['CS_Casa'] * 0.15))
-    lambda_casa *= (1.0 - (stats[casa]['FTS_Casa'] * 0.15))
-    lambda_fora *= (1.0 - (stats[fora]['FTS_Fora'] * 0.15))
+    lambda_casa *= (1.0 - (stats[fora]['CS_Fora'] * 0.4))
+    lambda_fora *= (1.0 - (stats[casa]['CS_Casa'] * 0.4))
+    lambda_casa *= (1.0 - (stats[casa]['FTS_Casa'] * 0.3))
+    lambda_fora *= (1.0 - (stats[fora]['FTS_Fora'] * 0.3))
 
     golos_casa_sim = np.random.poisson(lambda_casa, sims)
     golos_fora_sim = np.random.poisson(lambda_fora, sims)
@@ -189,12 +206,11 @@ def gerar_matriz_resultados(lambda_casa, lambda_fora, max_golos=5):
     columns = [f"{j} Golos (Fora)" for j in range(max_golos)]
     return pd.DataFrame(matriz, index=index, columns=columns)
 
-def gerar_narrativa(casa, fora, stats, res, clima_msg, fase_nome):
-    txt = f"O *{casa}* tem uma forma recente de [{stats[casa]['Forma']}] e o *{fora}* de [{stats[fora]['Forma']}]. "
-    txt += f"Fase *{fase_nome}* da época. "
+def gerar_narrativa(casa, fora, stats, res):
+    txt = f"O *{casa}* tem uma forma recente de [{stats[casa]['Forma']}] (Fator Momento: {stats[casa]['Fator_Momento']:.2f}x), enquanto o *{fora}* apresenta [{stats[fora]['Forma']}] (Fator Momento: {stats[fora]['Fator_Momento']:.2f}x). "
     txt += f"O modelo matemático projeta um xG de *{res['xG_Casa']:.2f}* para o {casa} e *{res['xG_Fora']:.2f}* para o {fora}. "
-    if res['Over2.5'] > 0.55: txt += f"Com {res['Over2.5']:.1%} de prob. para Mais de 2.5 Golos, espera-se um jogo aberto. "
-    else: txt += f"A prob. de Mais de 2.5 Golos é de {res['Over2.5']:.1%}. "
+    if res['Over2.5'] > 0.55: txt += f"Com {res['Over2.5']:.1%} de probabilidade para Mais de 2.5 Golos, espera-se um jogo aberto. "
+    else: txt += f"A probabilidade de Mais de 2.5 Golos é de {res['Over2.5']:.1%}, sugerindo um jogo mais tático. "
     if res['BTTS'] > 0.55: txt += "Ambas as equipas têm argumentos para marcar."
     else: txt += "O mercado de 'Ambas Marcam' não é o mais favorável."
     return txt
@@ -212,18 +228,13 @@ else:
         fora = col2.selectbox("✈️ Equipa de Fora", equipas)
         if st.button("🚀 Gerar Análise Completa", use_container_width=True):
             if casa != fora:
-                clima, clima_msg = obter_clima_automatico(casa)
-                jogos_feitos_casa = tabela[casa]['Jogos_Feitos'] if tabela and casa in tabela else 10
-                fase_nome, fase_fator = calcular_fase_epoca(jogos_feitos_casa)
-                
-                # A previsão agora é 100% matemática (Poisson) sem fatores externos
                 res = prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora)
                 
                 st.markdown(f"## 🏆 Análise: {casa} vs {fora}")
-                tab1, tab2, tab3 = st.tabs(["📊 Resumo e Odds", "📈 Estatísticas", "⚔️ H2H (Informativo)"])
+                tab1, tab2, tab3 = st.tabs(["📊 Resumo e Odds", "📈 Estatísticas", "⚔️ H2H"])
                 
                 with tab1:
-                    st.info(gerar_narrativa(casa, fora, stats, res, clima_msg, fase_nome))
+                    st.info(gerar_narrativa(casa, fora, stats, res))
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Vitória Casa (1)", f"{res['Casa']:.1%}")
                     c2.metric("Empate (X)", f"{res['Empate']:.1%}")
@@ -271,12 +282,6 @@ else:
                     st.table(odds_df)
 
                 with tab2:
-                    st.markdown("### 🌍 Contexto Ambiental (Apenas Informativo)")
-                    ctx1, ctx2 = st.columns(2)
-                    ctx1.info(f"*📍 Clima:* {clima_msg}")
-                    ctx2.info(f"*📅 Fase da Época:* {fase_nome}")
-                    st.markdown("---")
-
                     st.markdown("### 📊 Comparação de Força (xG Esperado)")
                     chart_data = pd.DataFrame({'Equipa': [casa, fora], 'xG': [res['xG_Casa'], res['xG_Fora']]}).set_index('Equipa')
                     st.bar_chart(chart_data, color="#00a86b")
@@ -307,7 +312,7 @@ else:
                     st.dataframe(matriz.style.background_gradient(cmap='Greens', axis=None).format("{:.2%}"), use_container_width=True)
 
                 with tab3:
-                    st.markdown("### 🤝 Histórico H2H (Apenas Informativo)")
+                    st.markdown("### 🤝 Histórico H2H (Últimos 5)")
                     h2h_jogos = df[((df['Casa'] == casa) & (df['Fora'] == fora)) | ((df['Casa'] == fora) & (df['Fora'] == casa))].tail(5)
                     if not h2h_jogos.empty:
                         h2h_display = h2h_jogos[['Data', 'Casa', 'Golos_Casa', 'Golos_Fora', 'Fora']].copy()
@@ -318,6 +323,5 @@ else:
 
             else:
                 st.error("Seleciona equipas diferentes.")
-                
     else:
         st.error("⚠️ Não foi possível carregar os dados. Verifica a API Key ou espera 1 minuto (limite de pedidos).")
