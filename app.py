@@ -7,8 +7,9 @@ import math
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="AI Football Analytics PRO", layout="wide")
 st.title("⚽ AI Football Analytics - Previsões Avançadas")
-st.markdown("Análise preditiva baseada em Golos (Dixon-Coles) com Contexto Visual.")
+st.markdown("Análise preditiva baseada em Poisson + Monte Carlo + Dixon-Coles.")
 
+# --- MAPEAMENTO DE CIDADES ---
 CIDADES_EQUIPAS = {
     "FC Barcelona": "Barcelona", "Real Madrid CF": "Madrid", "Manchester United FC": "Manchester",
     "Manchester City FC": "Manchester", "Liverpool FC": "Liverpool", "Arsenal FC": "London",
@@ -18,6 +19,7 @@ CIDADES_EQUIPAS = {
     "Parma Calcio 1913": "Parma", "Udinese Calcio": "Udine"
 }
 
+# --- BARRA LATERAL ---
 st.sidebar.header("1. Configurações")
 try:
     API_KEY = st.secrets["API_KEY"]
@@ -35,40 +37,52 @@ LIGAS_DISPONIVEIS = {
 liga_nome = st.sidebar.selectbox("🏆 Escolhe o Campeonato", list(LIGAS_DISPONIVEIS.keys()))
 liga_codigo = LIGAS_DISPONIVEIS[liga_nome]
 
+# --- FUNÇÕES DE DADOS ---
 @st.cache_data(ttl=600)
 def obter_dados_fd(codigo_liga, api_key):
-    headers = {'X-Auth-Token': api_key}
-    url_matches = f'https://api.football-data.org/v4/competitions/{codigo_liga}/matches'
-    url_standings = f'https://api.football-data.org/v4/competitions/{codigo_liga}/standings'
-    res_matches = requests.get(url_matches, headers=headers)
-    res_standings = requests.get(url_standings, headers=headers)
-    if res_matches.status_code != 200: return None, None
-    dados_matches = res_matches.json()
-    dados_standings = res_standings.json() if res_standings.status_code == 200 else None
-    jogos = []
-    for match in dados_matches['matches']:
-        if match['status'] == 'FINISHED':
-            gc, gf = match['score']['fullTime']['home'], match['score']['fullTime']['away']
-            if gc is not None and gf is not None:
-                jogos.append({'Data': pd.to_datetime(match['utcDate']).date(), 'Casa': match['homeTeam']['name'], 'Fora': match['awayTeam']['name'], 'Golos_Casa': int(gc), 'Golos_Fora': int(gf)})
-    df = pd.DataFrame(jogos)
-    tabela = {}
-    if dados_standings:
-        for table in dados_standings['standings']:
-            if table['type'] == 'TOTAL':
-                for entry in table['table']:
-                    tabela[entry['team']['name']] = {'Posicao': entry['position'], 'Pontos': entry['points'], 'Jogos_Feitos': entry['playedGames']}
-    return df, tabela
+    try:
+        headers = {'X-Auth-Token': api_key}
+        url_matches = f'https://api.football-data.org/v4/competitions/{codigo_liga}/matches'
+        url_standings = f'https://api.football-data.org/v4/competitions/{codigo_liga}/standings'
+        
+        res_matches = requests.get(url_matches, headers=headers, timeout=10)
+        res_standings = requests.get(url_standings, headers=headers, timeout=10)
+        
+        if res_matches.status_code != 200: 
+            return None, None
+            
+        dados_matches = res_matches.json()
+        dados_standings = res_standings.json() if res_standings.status_code == 200 else None
+        
+        jogos = []
+        for match in dados_matches['matches']:
+            if match['status'] == 'FINISHED':
+                gc, gf = match['score']['fullTime']['home'], match['score']['fullTime']['away']
+                if gc is not None and gf is not None:
+                    jogos.append({'Data': pd.to_datetime(match['utcDate']).date(), 'Casa': match['homeTeam']['name'], 'Fora': match['awayTeam']['name'], 'Golos_Casa': int(gc), 'Golos_Fora': int(gf)})
+        
+        df = pd.DataFrame(jogos)
+        
+        tabela = {}
+        if dados_standings:
+            for table in dados_standings['standings']:
+                if table['type'] == 'TOTAL':
+                    for entry in table['table']:
+                        tabela[entry['team']['name']] = {'Posicao': entry['position'], 'Pontos': entry['points'], 'Jogos_Feitos': entry['playedGames']}
+        return df, tabela
+    except Exception:
+        return None, None
 
+# --- CLIMA AUTOMÁTICO ---
 @st.cache_data(ttl=3600)
 def obter_clima_automatico(nome_equipa):
     try:
         nome_limpo = nome_equipa.replace(" FC", "").replace(" CF", "").replace(" SC", "").replace(" AC", "").replace(" AFC", "").strip()
         cidade = CIDADES_EQUIPAS.get(nome_equipa, nome_limpo)
-        geo_res = requests.get(f"https://geocoding-api.open-meteo.com/v1/search?name={cidade}&count=1&language=en&format=json", timeout=10).json()
+        geo_res = requests.get(f"https://geocoding-api.open-meteo.com/v1/search?name={cidade}&count=1&language=en&format=json", timeout=5).json()
         if 'results' not in geo_res or len(geo_res['results']) == 0: return "Normal", f"Cidade não encontrada: {cidade}"
         lat, lon = geo_res['results'][0]['latitude'], geo_res['results'][0]['longitude']
-        weather_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=precipitation_sum&timezone=auto&forecast_days=1", timeout=10).json()
+        weather_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=precipitation_sum&timezone=auto&forecast_days=1", timeout=5).json()
         if 'daily' in weather_res and 'precipitation_sum' in weather_res['daily']:
             precip = weather_res['daily']['precipitation_sum'][0]
             if precip is not None and precip > 5.0: return "Chuva Forte / Mau Tempo", f"{cidade}: {precip:.1f}mm de chuva"
@@ -81,12 +95,12 @@ def calcular_fase_epoca(jogos_feitos):
     elif jogos_feitos <= 25: return "Meio"
     else: return "Fim"
 
-# --- MOTOR MATEMÁTICO PURAMENTE BASEADO EM GOLOS ---
-def calcular_metricas_puras(df):
+# --- MOTOR MATEMÁTICO (POISSON + MONTE CARLO) ---
+def calcular_metricas(df):
     if df.empty: return None, None, None
     df = df.sort_values('Data')
     
-    # Média global de golos na liga (com peso para os jogos recentes)
+    # Peso de tendência
     df['Peso'] = df.index.map(lambda x: 2.5 if x >= len(df) - 15 else 1.0)
     media_golos_casa = np.average(df['Golos_Casa'], weights=df['Peso'])
     media_golos_fora = np.average(df['Golos_Fora'], weights=df['Peso'])
@@ -104,7 +118,7 @@ def calcular_metricas_puras(df):
         peso_c = jogos_c / (jogos_c + 5.0)
         peso_f = jogos_f / (jogos_f + 5.0)
         
-        # Força pura baseada nos golos
+        # Força Baseada em Golos
         ataque_casa_bruto = np.average(jogos_casa['Golos_Casa'], weights=jogos_casa['Peso']) / media_golos_casa if jogos_c > 0 else 1.0
         defesa_casa_bruto = np.average(jogos_casa['Golos_Fora'], weights=jogos_casa['Peso']) / media_golos_fora if jogos_c > 0 else 1.0
         ataque_fora_bruto = np.average(jogos_fora['Golos_Fora'], weights=jogos_fora['Peso']) / media_golos_fora if jogos_f > 0 else 1.0
@@ -115,7 +129,7 @@ def calcular_metricas_puras(df):
         ataque_fora = (ataque_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         defesa_fora = (defesa_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         
-        # Para exibição visual apenas
+        # Dados visuais
         cs_casa = (jogos_casa['Golos_Fora'] == 0).sum() / jogos_c if jogos_c > 0 else 0.25
         cs_fora = (jogos_fora['Golos_Casa'] == 0).sum() / jogos_f if jogos_f > 0 else 0.25
         fts_casa = (jogos_casa['Golos_Casa'] == 0).sum() / jogos_c if jogos_c > 0 else 0.25
@@ -142,10 +156,11 @@ def calcular_metricas_puras(df):
     return stats, media_golos_casa, media_golos_fora
 
 def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
-    # O xG é calculado APENAS pela força de ataque e defesa
+    # Fórmula base do Poisson para xG
     lambda_casa = stats[casa]['Ataque_Casa'] * stats[fora]['Defesa_Fora'] * med_casa
     lambda_fora = stats[fora]['Ataque_Fora'] * stats[casa]['Defesa_Casa'] * med_fora
 
+    # Monte Carlo Simulation
     golos_casa_sim = np.random.poisson(lambda_casa, sims)
     golos_fora_sim = np.random.poisson(lambda_fora, sims)
     total_golos_sim = golos_casa_sim + golos_fora_sim
@@ -170,13 +185,16 @@ def gerar_matriz_resultados(lambda_casa, lambda_fora, max_golos=5):
     columns = [f"{j} Golos (Fora)" for j in range(max_golos)]
     return pd.DataFrame(matriz, index=index, columns=columns)
 
+# --- INTERFACE PRINCIPAL ---
 if not API_KEY:
-    st.warning("⚠️ Insere a tua API Key na barra lateral para começar.")
+    st.warning("⚠️ Insere a tua API Key na barra lateral.")
 else:
-    with st.spinner('A processar dados...'):
+    with st.spinner('A carregar dados da API...'):
         df, tabela = obter_dados_fd(liga_codigo, API_KEY)
+        
     if df is not None and not df.empty:
-        stats, med_casa, med_fora = calcular_metricas_puras(df)
+        stats, med_casa, med_fora = calcular_metricas(df)
+        
         col1, col2 = st.columns(2)
         equipas = sorted(list(stats.keys()))
         casa = col1.selectbox("🏠 Equipa da Casa", equipas)
@@ -186,16 +204,16 @@ else:
             if casa != fora:
                 res = prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora)
                 
-                # Dados de contexto (Apenas Visuais)
+                # Contexto
                 clima, clima_msg = obter_clima_automatico(casa)
                 jogos_feitos_casa = tabela[casa]['Jogos_Feitos'] if tabela and casa in tabela else 10
                 fase_nome = calcular_fase_epoca(jogos_feitos_casa)
                 
                 st.markdown(f"## 🏆 Análise: {casa} vs {fora}")
-                tab1, tab2, tab3 = st.tabs(["📊 Resumo e Odds", "📈 Estatísticas Puras", "⚔️ H2H e Contexto"])
+                tab1, tab2, tab3 = st.tabs(["📊 Resumo e Odds", "📈 Estatísticas", "⚔️ H2H"])
                 
                 with tab1:
-                    st.info(f"O modelo projeta um xG de *{res['xG_Casa']:.2f}* para o {casa} e *{res['xG_Fora']:.2f}* para o {fora}. Estas probabilidades baseiam-se exclusivamente na média de golos marcados e sofridos.")
+                    st.info(f"O modelo Poisson/Monte Carlo projeta um xG de *{res['xG_Casa']:.2f}* para o {casa} e *{res['xG_Fora']:.2f}* para o {fora}.")
                     
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Vitória Casa (1)", f"{res['Casa']:.1%}")
@@ -248,20 +266,20 @@ else:
                     chart_data = pd.DataFrame({'Equipa': [casa, fora], 'xG': [res['xG_Casa'], res['xG_Fora']]}).set_index('Equipa')
                     st.bar_chart(chart_data, color="#00a86b")
                     
-                    st.markdown("### 🛡️ Estatísticas Visuais")
+                    st.markdown("### 🛡️ Estatísticas Visuais (Não afetam o cálculo)")
                     c_cs1, c_cs2 = st.columns(2)
                     c_cs1.metric(f"Clean Sheets em Casa ({casa})", f"{stats[casa]['CS_Casa']:.1%}")
                     c_cs2.metric(f"Clean Sheets Fora ({fora})", f"{stats[fora]['CS_Fora']:.1%}")
                     c_fts1, c_fts2 = st.columns(2)
                     c_fts1.metric(f"Failed to Score ({casa})", f"{stats[casa]['FTS_Casa']:.1%}")
                     c_fts2.metric(f"Failed to Score ({fora})", f"{stats[fora]['FTS_Fora']:.1%}")
-
+                    
                     st.markdown("### 🎯 Resultados Exatos")
                     matriz = gerar_matriz_resultados(res['xG_Casa'], res['xG_Fora'])
                     st.dataframe(matriz.style.background_gradient(cmap='Greens', axis=None).format("{:.2%}"), use_container_width=True)
 
                 with tab3:
-                    st.markdown("### 🌍 Contexto e H2H (Apenas para Leitura)")
+                    st.markdown("### 🌍 Contexto do Jogo (Apenas Visual)")
                     ctx1, ctx2 = st.columns(2)
                     ctx1.info(f"*📍 Clima:* {clima_msg}")
                     ctx2.info(f"*📅 Fase da Época:* {fase_nome} | *Forma:* {casa} [{stats[casa]['Forma']}] vs {fora} [{stats[fora]['Forma']}]")
@@ -273,10 +291,8 @@ else:
                         h2h_display['Resultado'] = h2h_display['Golos_Casa'].astype(str) + " - " + h2h_display['Golos_Fora'].astype(str)
                         st.dataframe(h2h_display[['Data', 'Casa', 'Resultado', 'Fora']], hide_index=True, use_container_width=True)
                     else:
-                        st.info("Sem dados de H2H recentes na base de dados.")
-
+                        st.info("Sem dados de H2H recentes.")
             else:
                 st.error("Seleciona equipas diferentes.")
-                
     else:
-        st.error("⚠️ Não foi possível carregar os dados. Verifica a API Key ou espera 1 minuto (limite de pedidos).")
+        st.error("⚠️ Não foi possível carregar os dados. Verifica a tua ligação à internet, a API Key, ou espera 1 minuto (limite de pedidos gratuitos).")
