@@ -9,33 +9,33 @@ from scipy.optimize import minimize
 from scipy.special import gammaln
 
 # ============================================================
-# AI FOOTBALL ANALYTICS â€” v2 (revista e melhorada)
-# Poisson + Dixon-Coles por mÃ¡xima verosimilhanÃ§a ponderada
-# Time decay, backtest cronolÃ³gico (holdout + walk-forward),
-# baselines, log-loss, calibraÃ§Ã£o, odds justas e diagnÃ³sticos.
+# AI FOOTBALL ANALYTICS — v2 (revista e melhorada)
+# Poisson + Dixon-Coles por máxima verosimilhança ponderada
+# Time decay, backtest cronológico (holdout + walk-forward),
+# baselines, log-loss, calibração, odds justas e diagnósticos.
 # ============================================================
 
-# Reprodutibilidade para futuras extensÃµes (bootstrap, walk-forward estocÃ¡stico)
+# Reprodutibilidade para futuras extensões (bootstrap, walk-forward estocástico)
 np.random.seed(42)
 
 st.set_page_config(page_title="AI Football Analytics", layout="wide")
-st.title("âš½ AI Football Analytics")
+st.title("⚽ AI Football Analytics")
 st.caption(
-    "Poisson + Dixon-Coles | ponderaÃ§Ã£o temporal | backtesting cronolÃ³gico e walk-forward | "
-    "baselines | log-loss | calibraÃ§Ã£o | probabilidades e odds justas"
+    "Poisson + Dixon-Coles | ponderação temporal | backtesting cronológico e walk-forward | "
+    "baselines | log-loss | calibração | probabilidades e odds justas"
 )
 
-# ---------------------------- ConfiguraÃ§Ã£o ----------------------------
+# ---------------------------- Configuração ----------------------------
 COMPETITIONS = {
     "Premier League (Inglaterra)": "PL",
     "Championship (Inglaterra)": "ELC",
     "La Liga (Espanha)": "PD",
-    "Serie A (ItÃ¡lia)": "SA",
+    "Serie A (Itália)": "SA",
     "Bundesliga (Alemanha)": "BL1",
-    "Ligue 1 (FranÃ§a)": "FL1",
+    "Ligue 1 (França)": "FL1",
     "Primeira Liga (Portugal)": "PPL",
-    "Eredivisie (PaÃ­ses Baixos)": "DED",
-    "BrasileirÃ£o (Brasil)": "BSA",
+    "Eredivisie (Países Baixos)": "DED",
+    "Brasileirão (Brasil)": "BSA",
     "Champions League": "CL",
 }
 
@@ -44,7 +44,7 @@ DEFAULT_MAX_GOALS = 10
 DEFAULT_RHO_LIMIT = 0.20
 API_BASE = "https://api.football-data.org/v4"
 
-# Thresholds de EV justificados (ver funÃ§Ã£o odds_status)
+# Thresholds de EV justificados (ver função odds_status)
 EV_POSITIVE_THRESHOLD = 0.05
 EV_NEUTRAL_THRESHOLD = -0.04
 
@@ -52,7 +52,7 @@ EV_NEUTRAL_THRESHOLD = -0.04
 # ---------------------------- API e dados ----------------------------
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_competition_data(competition_code: str, season: int, api_key: str):
-    """ObtÃ©m jogos e classificaÃ§Ã£o. Nunca converte falhas da API em dados fictÃ­cios."""
+    """Obtém jogos e classificação. Nunca converte falhas da API em dados fictícios."""
     headers = {"X-Auth-Token": api_key}
     params = {"season": season}
     try:
@@ -117,7 +117,7 @@ def fetch_competition_data(competition_code: str, season: int, api_key: str):
             message = f"Erro HTTP {status}: {exc}"
         return pd.DataFrame(), {}, message
     except (requests.RequestException, ValueError, KeyError) as exc:
-        return pd.DataFrame(), {}, f"NÃ£o foi possÃ­vel obter os dados: {exc}"
+        return pd.DataFrame(), {}, f"Não foi possível obter os dados: {exc}"
 
 
 def prepare_matches(df: pd.DataFrame) -> pd.DataFrame:
@@ -139,7 +139,7 @@ def prepare_matches(df: pd.DataFrame) -> pd.DataFrame:
     return result.sort_values("Data").reset_index(drop=True)
 
 
-# ---------------------------- Modelo matemÃ¡tico ----------------------------
+# ---------------------------- Modelo matemático ----------------------------
 def time_weights(dates, reference_date=None, xi=DEFAULT_XI):
     """Peso exponencial; xi=0.0055 corresponde a meia-vida aproximada de 126 dias."""
     if reference_date is None:
@@ -151,7 +151,7 @@ def time_weights(dates, reference_date=None, xi=DEFAULT_XI):
 
 
 def dc_tau(home_goals, away_goals, lam, mu, rho):
-    """CorreÃ§Ã£o Dixon-Coles para 0-0, 0-1, 1-0 e 1-1."""
+    """Correção Dixon-Coles para 0-0, 0-1, 1-0 e 1-1."""
     if home_goals == 0 and away_goals == 0:
         return 1.0 - lam * mu * rho
     if home_goals == 0 and away_goals == 1:
@@ -165,17 +165,17 @@ def dc_tau(home_goals, away_goals, lam, mu, rho):
 
 def fit_dixon_coles(df: pd.DataFrame, xi=DEFAULT_XI, rho_limit=DEFAULT_RHO_LIMIT):
     """
-    Ajusta forÃ§as de ataque/defesa, vantagem de casa (decomposta em ataque e defesa)
-    e rho por mÃ¡xima verosimilhanÃ§a ponderada no tempo.
+    Ajusta forças de ataque/defesa, vantagem de casa (decomposta em ataque e defesa)
+    e rho por máxima verosimilhança ponderada no tempo.
 
-    A vantagem de casa Ã© decomposta em:
+    A vantagem de casa é decomposta em:
       - gamma_att: multiplica o ataque da equipa da casa (log_lam += log(gamma_att))
       - gamma_def: reduz a defesa da equipa visitante (log_mu -= log(gamma_def))
-    Isto segue a convenÃ§Ã£o Dixon-Coles (1997) em vez de assumir 100% ofensiva.
+    Isto segue a convenção Dixon-Coles (1997) em vez de assumir 100% ofensiva.
     """
     data = prepare_matches(df)
     if len(data) < 20:
-        raise ValueError("SÃ£o necessÃ¡rios pelo menos 20 jogos para ajustar o modelo.")
+        raise ValueError("São necessários pelo menos 20 jogos para ajustar o modelo.")
 
     teams = sorted(set(data["Casa"]).union(data["Fora"]))
     team_to_idx = {team: idx for idx, team in enumerate(teams)}
@@ -188,7 +188,7 @@ def fit_dixon_coles(df: pd.DataFrame, xi=DEFAULT_XI, rho_limit=DEFAULT_RHO_LIMIT
         raise ValueError("Os pesos temporais colapsaram para zero; verifica xi e as datas.")
     n_teams = len(teams)
 
-    # ParÃ¢metros: log-ataques, log-defesas, log-gamma_att, log-gamma_def, rho.
+    # Parâmetros: log-ataques, log-defesas, log-gamma_att, log-gamma_def, rho.
     initial = np.zeros(2 * n_teams + 3)
     initial[2 * n_teams] = math.log(1.10)       # gamma_att ~ 1.10
     initial[2 * n_teams + 1] = math.log(1.05)   # gamma_def ~ 1.05
@@ -222,7 +222,7 @@ def fit_dixon_coles(df: pd.DataFrame, xi=DEFAULT_XI, rho_limit=DEFAULT_RHO_LIMIT
         tau[home_one_away_zero] = 1 + mu[home_one_away_zero] * rho
         tau[both_one] = 1 - rho
         if np.any(tau <= 1e-8):
-            # PenalizaÃ§Ã£o suave em vez de retorno 1e10 (evita gradiente descontÃ­nuo)
+            # Penalização suave em vez de retorno 1e10 (evita gradiente descontínuo)
             return 1e6 + 1e6 * float(np.sum(np.maximum(0.0, 1e-8 - tau)))
         log_prob += np.log(tau)
 
@@ -276,7 +276,7 @@ def predict_match(home, away, model, max_goals=DEFAULT_MAX_GOALS):
         raise ValueError("Escolhe duas equipas diferentes.")
     teams = model["teams"]
     if home not in teams or away not in teams:
-        raise ValueError("Uma das equipas nÃ£o existe na amostra usada para ajustar o modelo.")
+        raise ValueError("Uma das equipas não existe na amostra usada para ajustar o modelo.")
 
     lam = model["attack"][home] * model["defence"][away] * model["gamma_att"]
     mu = model["attack"][away] * model["defence"][home] / model["gamma_def"]
@@ -287,7 +287,7 @@ def predict_match(home, away, model, max_goals=DEFAULT_MAX_GOALS):
     away_probs = np.array([poisson_pmf(j, mu) for j in range(max_goals + 1)])
     raw_matrix = np.outer(home_probs, away_probs)
 
-    # Cauda calculada ANTES da correÃ§Ã£o DC e normalizaÃ§Ã£o (bug da v1 corrigido).
+    # Cauda calculada ANTES da correção DC e normalização (bug da v1 corrigido).
     tail_probability = max(0.0, 1.0 - float(raw_matrix.sum()))
 
     matrix = raw_matrix.copy()
@@ -299,7 +299,7 @@ def predict_match(home, away, model, max_goals=DEFAULT_MAX_GOALS):
 
     raw_sum = matrix.sum()
     if raw_sum <= 0:
-        raise ValueError("A matriz de probabilidades nÃ£o Ã© vÃ¡lida.")
+        raise ValueError("A matriz de probabilidades não é válida.")
     matrix /= raw_sum
 
     home_win = float(np.tril(matrix, -1).sum())
@@ -326,7 +326,7 @@ def predict_match(home, away, model, max_goals=DEFAULT_MAX_GOALS):
         "Massa_cauda_aproximada": tail_probability,
     }
     return result
-# ---------------------------- MÃ©tricas ----------------------------
+# ---------------------------- Métricas ----------------------------
 def brier_score_binary(probabilities, outcomes):
     p = np.asarray(probabilities, dtype=float)
     y = np.asarray(outcomes, dtype=float)
@@ -350,7 +350,7 @@ def multiclass_log_loss(prob_matrix, actual_class, eps=1e-15):
 
 # ---------------------------- Baselines ----------------------------
 def baseline_league_frequencies(train_df: pd.DataFrame):
-    """FrequÃªncias histÃ³ricas 1X2 e golos mÃ©dios na amostra de treino."""
+    """Frequências históricas 1X2 e golos médios na amostra de treino."""
     if train_df.empty:
         return None
     hw = (train_df["Golos_Casa"] > train_df["Golos_Fora"]).mean()
@@ -370,20 +370,20 @@ def baseline_league_frequencies(train_df: pd.DataFrame):
 
 
 def predict_baseline_frequencies(baseline):
-    """PrevisÃ£o baseline: mesmas probabilidades para todos os jogos."""
+    """Previsão baseline: mesmas probabilidades para todos os jogos."""
     return baseline["probs_1x2"], baseline["over25"], baseline["btts"]
 
 
 # ---------------------------- Backtest holdout ----------------------------
 def run_chronological_backtest(df, xi=DEFAULT_XI, train_fraction=0.70, max_goals=DEFAULT_MAX_GOALS):
     """
-    Holdout cronolÃ³gico: treina nos jogos mais antigos, testa nos mais recentes.
-    Devolve mÃ©tricas do modelo DC, do baseline de frequÃªncias e de um Poisson simples
-    (sem correÃ§Ã£o DC, com vantagem de casa ofensiva), para comparaÃ§Ã£o justa.
+    Holdout cronológico: treina nos jogos mais antigos, testa nos mais recentes.
+    Devolve métricas do modelo DC, do baseline de frequências e de um Poisson simples
+    (sem correção DC, com vantagem de casa ofensiva), para comparação justa.
     """
     data = prepare_matches(df)
     if len(data) < 60:
-        return None, "SÃ£o necessÃ¡rios pelo menos 60 jogos para um backtest minimamente Ãºtil."
+        return None, "São necessários pelo menos 60 jogos para um backtest minimamente útil."
     split = int(len(data) * train_fraction)
     split = max(30, min(split, len(data) - 10))
     train = data.iloc[:split].copy()
@@ -391,7 +391,7 @@ def run_chronological_backtest(df, xi=DEFAULT_XI, train_fraction=0.70, max_goals
     try:
         model = fit_dixon_coles(train, xi=xi)
     except Exception as exc:
-        return None, f"NÃ£o foi possÃ­vel ajustar o modelo de backtest: {exc}"
+        return None, f"Não foi possível ajustar o modelo de backtest: {exc}"
 
     baseline = baseline_league_frequencies(train)
     base_probs_1x2, base_over25, base_btts = predict_baseline_frequencies(baseline)
@@ -419,7 +419,7 @@ def run_chronological_backtest(df, xi=DEFAULT_XI, train_fraction=0.70, max_goals
             "Brier_1X2_individual": float(np.sum((probs_1x2 - np.eye(3)[actual_1x2]) ** 2)),
         })
     if not rows:
-        return None, "NÃ£o existem jogos de teste com ambas as equipas presentes no treino."
+        return None, "Não existem jogos de teste com ambas as equipas presentes no treino."
     results = pd.DataFrame(rows)
     p_1x2 = results[["P(1)", "P(X)", "P(2)"]].to_numpy()
     actual = results["Real_1X2"].to_numpy(dtype=int)
@@ -436,7 +436,7 @@ def run_chronological_backtest(df, xi=DEFAULT_XI, train_fraction=0.70, max_goals
         "LogLoss 1X2": multiclass_log_loss(p_1x2, actual),
         "Brier Over 2.5": brier_score_binary(results["P(Over 2.5)"], results["Real_Over25"]),
         "Brier BTTS": brier_score_binary(results["P(BTTS)"], results["Real_BTTS"]),
-        "AcurÃ¡cia 1X2": float(np.mean(np.argmax(p_1x2, axis=1) == actual)),
+        "Acurácia 1X2": float(np.mean(np.argmax(p_1x2, axis=1) == actual)),
         "Brier 1X2 (baseline)": multiclass_brier(base_matrix, actual),
         "LogLoss 1X2 (baseline)": multiclass_log_loss(base_matrix, actual),
         "Brier Over 2.5 (baseline)": brier_score_binary(base_over_vec, results["Real_Over25"]),
@@ -448,13 +448,13 @@ def run_chronological_backtest(df, xi=DEFAULT_XI, train_fraction=0.70, max_goals
 # ---------------------------- Walk-forward ----------------------------
 def run_walk_forward(df, xi=DEFAULT_XI, min_train=30, step=5, max_goals=DEFAULT_MAX_GOALS):
     """
-    Walk-forward com janela expansÃ­vel. A cada `step` jogos, refit no passado e prevÃª
-    os prÃ³ximos `step` jogos. Devolve mÃ©tricas agregadas por jogo (out-of-sample real).
+    Walk-forward com janela expansível. A cada `step` jogos, refit no passado e prevê
+    os próximos `step` jogos. Devolve métricas agregadas por jogo (out-of-sample real).
     """
     data = prepare_matches(df)
     if len(data) < min_train + step * 2:
         return None, (
-            f"SÃ£o necessÃ¡rios pelo menos {min_train + step * 2} jogos para walk-forward "
+            f"São necessários pelo menos {min_train + step * 2} jogos para walk-forward "
             f"(min_train={min_train}, step={step})."
         )
 
@@ -486,7 +486,7 @@ def run_walk_forward(df, xi=DEFAULT_XI, min_train=30, step=5, max_goals=DEFAULT_
                 "Real_BTTS": int(hg > 0 and ag > 0),
             })
     if not predictions:
-        return None, "O walk-forward nÃ£o produziu previsÃµes vÃ¡lidas."
+        return None, "O walk-forward não produziu previsões válidas."
 
     results = pd.DataFrame(predictions)
     p_1x2 = results[["P(1)", "P(X)", "P(2)"]].to_numpy()
@@ -498,12 +498,12 @@ def run_walk_forward(df, xi=DEFAULT_XI, min_train=30, step=5, max_goals=DEFAULT_
         "LogLoss 1X2": multiclass_log_loss(p_1x2, actual),
         "Brier Over 2.5": brier_score_binary(results["P(Over 2.5)"], results["Real_Over25"]),
         "Brier BTTS": brier_score_binary(results["P(BTTS)"], results["Real_BTTS"]),
-        "AcurÃ¡cia 1X2": float(np.mean(np.argmax(p_1x2, axis=1) == actual)),
+        "Acurácia 1X2": float(np.mean(np.argmax(p_1x2, axis=1) == actual)),
     }
     return {"metrics": metrics, "results": results}, None
-# ---------------------------- CalibraÃ§Ã£o ----------------------------
+# ---------------------------- Calibração ----------------------------
 def calibration_table(probabilities, outcomes, n_bins=10):
-    """Tabela de calibraÃ§Ã£o: prob. mÃ©dia prevista vs. frequÃªncia observada por bin."""
+    """Tabela de calibração: prob. média prevista vs. frequência observada por bin."""
     p = np.asarray(probabilities, dtype=float)
     y = np.asarray(outcomes, dtype=float)
     if len(p) == 0:
@@ -533,9 +533,9 @@ def expected_value(probability, odds):
 
 def odds_status(ev, margin=0.05):
     """
-    ClassificaÃ§Ã£o indicativa do EV. Os thresholds (Â±5% e -4%) sÃ£o heurÃ­sticos:
-    +5% Ã© um limite conservador para sinal positivo; -4% Ã© a zona onde a margem
-    da casa jÃ¡ domina. NÃ£o substituem uma anÃ¡lise de incerteza (bootstrap/IC).
+    Classificação indicativa do EV. Os thresholds (±5% e -4%) são heurísticos:
+    +5% é um limite conservador para sinal positivo; -4% é a zona onde a margem
+    da casa já domina. Não substituem uma análise de incerteza (bootstrap/IC).
     """
     if ev > margin:
         return "EV positivo estimado"
@@ -557,7 +557,7 @@ def make_score_matrix(matrix, display_max=6):
 
 # ---------------------------- Barra lateral ----------------------------
 with st.sidebar:
-    st.header("1. Dados e parÃ¢metros")
+    st.header("1. Dados e parâmetros")
     try:
         api_key = st.secrets["API_KEY"]
         st.success("Chave API carregada dos Secrets")
@@ -568,17 +568,17 @@ with st.sidebar:
     competition_code = COMPETITIONS[competition_name]
     current_year = date.today().year
     season_default = current_year if date.today().month >= 7 else current_year - 1
-    season = st.number_input("Ano de inÃ­cio da Ã©poca", min_value=2010, max_value=current_year,
+    season = st.number_input("Ano de início da época", min_value=2010, max_value=current_year,
                              value=season_default, step=1)
     xi = st.number_input("Decaimento temporal (xi)", min_value=0.0, max_value=0.03,
                          value=DEFAULT_XI, step=0.0005, format="%.4f",
-                         help="0 = todos os jogos tÃªm peso igual. 0.0055 corresponde a meia-vida aproximada de 126 dias.")
-    max_goals = st.slider("MÃ¡ximo de golos na matriz", min_value=7, max_value=15,
+                         help="0 = todos os jogos têm peso igual. 0.0055 corresponde a meia-vida aproximada de 126 dias.")
+    max_goals = st.slider("Máximo de golos na matriz", min_value=7, max_value=15,
                           value=DEFAULT_MAX_GOALS)
     train_fraction = st.slider("Percentagem inicial para treino no holdout",
                                min_value=0.60, max_value=0.90, value=0.70, step=0.05)
     wf_step = st.slider("Passo do walk-forward (jogos)", min_value=3, max_value=15, value=5)
-    reload_button = st.button("ðŸ”„ Atualizar dados", use_container_width=True)
+    reload_button = st.button("🔄 Atualizar dados", use_container_width=True)
 
 if not api_key:
     st.info("Insere a chave da API na barra lateral para carregar os jogos.")
@@ -587,7 +587,7 @@ if not api_key:
 if reload_button:
     fetch_competition_data.clear()
 
-with st.spinner("A obter jogos da competiÃ§Ã£o..."):
+with st.spinner("A obter jogos da competição..."):
     raw_df, standings, api_error = fetch_competition_data(competition_code, int(season), api_key)
 
 if api_error:
@@ -596,25 +596,25 @@ if api_error:
 
 df = prepare_matches(raw_df)
 if df.empty:
-    st.warning("A API nÃ£o devolveu jogos terminados para esta competiÃ§Ã£o/Ã©poca.")
+    st.warning("A API não devolveu jogos terminados para esta competição/época.")
     st.stop()
 
 if len(df) < 20:
-    st.warning(f"Existem apenas {len(df)} jogos. O modelo precisa de pelo menos 20 para ser ajustado com este cÃ³digo.")
+    st.warning(f"Existem apenas {len(df)} jogos. O modelo precisa de pelo menos 20 para ser ajustado com este código.")
 
-# ---------------------------- VisÃ£o geral ----------------------------
+# ---------------------------- Visão geral ----------------------------
 st.markdown("### Resumo dos dados")
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Jogos concluÃ­dos", f"{len(df)}")
+m1.metric("Jogos concluídos", f"{len(df)}")
 m2.metric("Equipas encontradas", f"{len(set(df['Casa']) | set(df['Fora']))}")
 m3.metric("Primeiro jogo", str(min(df["Data"])))
-m4.metric("Ãšltimo jogo", str(max(df["Data"])))
-st.caption("Os resultados sÃ£o os disponibilizados pela API. Confirma a cobertura da Ã©poca e do teu plano de API.")
+m4.metric("Último jogo", str(max(df["Data"])))
+st.caption("Os resultados são os disponibilizados pela API. Confirma a cobertura da época e do teu plano de API.")
 
 if len(df) < 20:
     st.stop()
 
-with st.spinner("A ajustar o modelo por mÃ¡xima verosimilhanÃ§a..."):
+with st.spinner("A ajustar o modelo por máxima verosimilhança..."):
     try:
         model = fit_dixon_coles(df, xi=xi)
     except Exception as exc:
@@ -622,28 +622,28 @@ with st.spinner("A ajustar o modelo por mÃ¡xima verosimilhanÃ§a..."):
         st.stop()
 
 if not model["fit_success"]:
-    st.warning(f"O otimizador nÃ£o convergiu plenamente: {model['fit_message']}")
+    st.warning(f"O otimizador não convergiu plenamente: {model['fit_message']}")
 
 with st.sidebar:
     st.markdown("---")
     st.metric("Vantagem de casa estimada", f"{model['home_adv']:.3f}")
     st.caption(
-        f"Decomposta: Î³_att={model['gamma_att']:.3f} (ataque casa) Ã— "
-        f"Î³_def={model['gamma_def']:.3f} (defesa fora)"
+        f"Decomposta: γ_att={model['gamma_att']:.3f} (ataque casa) × "
+        f"γ_def={model['gamma_def']:.3f} (defesa fora)"
     )
     st.metric("Rho Dixon-Coles estimado", f"{model['rho']:.3f}")
-    st.metric("MÃ©dia ponderada golos casa", f"{model['league_home_goals']:.2f}")
-    st.metric("MÃ©dia ponderada golos fora", f"{model['league_away_goals']:.2f}")
+    st.metric("Média ponderada golos casa", f"{model['league_home_goals']:.2f}")
+    st.metric("Média ponderada golos fora", f"{model['league_away_goals']:.2f}")
     st.caption(f"Objetivo final (nll + reg): {model['objective']:.2f}")
 
 teams = sorted(model["teams"])
 col_home, col_away = st.columns(2)
-home_team = col_home.selectbox("ðŸ  Equipa da casa", teams, key="home_team")
+home_team = col_home.selectbox("🏠 Equipa da casa", teams, key="home_team")
 away_options = [team for team in teams if team != home_team]
-away_team = col_away.selectbox("âœˆï¸ Equipa visitante", away_options, key="away_team")
+away_team = col_away.selectbox("✈️ Equipa visitante", away_options, key="away_team")
 
 if home_team not in model["teams"] or away_team not in model["teams"]:
-    st.error("As duas equipas tÃªm de estar presentes nos jogos usados para treinar o modelo.")
+    st.error("As duas equipas têm de estar presentes nos jogos usados para treinar o modelo.")
     st.stop()
 
 prediction = predict_match(home_team, away_team, model, max_goals=max_goals)
@@ -652,11 +652,11 @@ prediction = predict_match(home_team, away_team, model, max_goals=max_goals)
 def standing_info(team):
     if team in standings and standings[team].get("Posicao") is not None:
         s = standings[team]
-        return f"#{s['Posicao']} Â· {s.get('Pontos', '?')} pts Â· {s.get('Jogos_Feitos', '?')} jogos"
-    return "Sem classificaÃ§Ã£o disponÃ­vel"
+        return f"#{s['Posicao']} · {s.get('Pontos', '?')} pts · {s.get('Jogos_Feitos', '?')} jogos"
+    return "Sem classificação disponível"
 
 st.markdown(f"## {home_team} vs {away_team}")
-st.caption(f"ðŸ  {standing_info(home_team)}  |  âœˆï¸ {standing_info(away_team)}")
+st.caption(f"🏠 {standing_info(home_team)}  |  ✈️ {standing_info(away_team)}")
 
 x1, x2, x3 = st.columns(3)
 x1.metric(f"xG {home_team}", f"{prediction['xG_Casa']:.2f}")
@@ -664,22 +664,22 @@ x2.metric(f"xG {away_team}", f"{prediction['xG_Fora']:.2f}")
 x3.metric("Total xG", f"{prediction['xG_Casa'] + prediction['xG_Fora']:.2f}")
 
 st.caption(
-    f"Modelo ajustado com {model['n_matches']} jogos atÃ© {model['last_date']}. "
-    f"Estes xG sÃ£o estimativas do modelo, nÃ£o xG oficiais de fornecedores."
+    f"Modelo ajustado com {model['n_matches']} jogos até {model['last_date']}. "
+    f"Estes xG são estimativas do modelo, não xG oficiais de fornecedores."
 )
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["ðŸ“Š Probabilidades", "ðŸŽ¯ Odds e EV", "ðŸ“ˆ Equipas e matriz", "ðŸ§ª Backtesting", "ðŸ“ CalibraÃ§Ã£o"]
+    ["📊 Probabilidades", "🎯 Odds e EV", "📈 Equipas e matriz", "🧪 Backtesting", "📐 Calibração"]
 )
 
 with tab1:
     st.subheader("Mercado 1X2")
     c1, c2, c3 = st.columns(3)
-    c1.metric("VitÃ³ria casa (1)", f"{prediction['Casa']:.1%}",
+    c1.metric("Vitória casa (1)", f"{prediction['Casa']:.1%}",
               f"Odd justa {fair_odds(prediction['Casa']):.2f}")
     c2.metric("Empate (X)", f"{prediction['Empate']:.1%}",
               f"Odd justa {fair_odds(prediction['Empate']):.2f}")
-    c3.metric("VitÃ³ria fora (2)", f"{prediction['Fora']:.1%}",
+    c3.metric("Vitória fora (2)", f"{prediction['Fora']:.1%}",
               f"Odd justa {fair_odds(prediction['Fora']):.2f}")
 
     st.subheader("Mercados de golos")
@@ -691,8 +691,8 @@ with tab1:
         ("Under 1.5", prediction["Under1.5"]),
         ("Under 2.5", prediction["Under2.5"]),
         ("Under 3.5", prediction["Under3.5"]),
-        ("BTTS â€” Sim", prediction["BTTS"]),
-        ("BTTS â€” NÃ£o", prediction["NoBTTS"]),
+        ("BTTS — Sim", prediction["BTTS"]),
+        ("BTTS — Não", prediction["NoBTTS"]),
     ]
     markets_df = pd.DataFrame([
         {"Mercado": name, "Probabilidade": prob, "Odd justa": fair_odds(prob)}
@@ -705,33 +705,33 @@ with tab1:
     if prediction["Massa_cauda_aproximada"] > 0.005:
         st.warning(
             f"A matriz truncada deixa aproximadamente {prediction['Massa_cauda_aproximada']:.2%} "
-            "de massa de probabilidade fora do intervalo antes da normalizaÃ§Ã£o. "
-            "Aumenta o mÃ¡ximo de golos e verifica se o resultado estabiliza."
+            "de massa de probabilidade fora do intervalo antes da normalização. "
+            "Aumenta o máximo de golos e verifica se o resultado estabiliza."
         )
     else:
-        st.caption("A massa de probabilidade fora da matriz Ã© pequena para este jogo.")
+        st.caption("A massa de probabilidade fora da matriz é pequena para este jogo.")
 
 with tab2:
-    st.write("Introduz as odds decimais disponÃ­veis. O EV Ã© uma estimativa bruta e nÃ£o inclui a incerteza do modelo.")
+    st.write("Introduz as odds decimais disponíveis. O EV é uma estimativa bruta e não inclui a incerteza do modelo.")
     market_options = {
-        "VitÃ³ria casa (1)": "Casa",
+        "Vitória casa (1)": "Casa",
         "Empate (X)": "Empate",
-        "VitÃ³ria fora (2)": "Fora",
+        "Vitória fora (2)": "Fora",
         "Over 1.5": "Over1.5",
         "Over 2.5": "Over2.5",
         "Over 3.5": "Over3.5",
         "Under 1.5": "Under1.5",
         "Under 2.5": "Under2.5",
         "Under 3.5": "Under3.5",
-        "BTTS â€” Sim": "BTTS",
-        "BTTS â€” NÃ£o": "NoBTTS",
+        "BTTS — Sim": "BTTS",
+        "BTTS — Não": "NoBTTS",
     }
     input_rows = []
     cols = st.columns(3)
     for idx, (market_name, key) in enumerate(market_options.items()):
         with cols[idx % 3]:
             odd = st.number_input(
-                f"Odd â€” {market_name}", min_value=1.01, max_value=1000.0,
+                f"Odd — {market_name}", min_value=1.01, max_value=1000.0,
                 value=2.00, step=0.01, key=f"odd_{key}"
             )
         p = prediction[key]
@@ -753,35 +753,35 @@ with tab2:
         use_container_width=True, hide_index=True
     )
     st.warning(
-        "Um EV positivo calculado nÃ£o prova que exista uma vantagem real. "
-        "Valida primeiro a calibraÃ§Ã£o e o desempenho histÃ³rico fora da amostra; "
-        "nÃ£o uses o Kelly como recomendaÃ§Ã£o automÃ¡tica de aposta."
+        "Um EV positivo calculado não prova que exista uma vantagem real. "
+        "Valida primeiro a calibração e o desempenho histórico fora da amostra; "
+        "não uses o Kelly como recomendação automática de aposta."
     )
 
 with tab3:
-    st.subheader("ForÃ§as estimadas das equipas")
+    st.subheader("Forças estimadas das equipas")
     strength_rows = []
     for team in teams:
         strength_rows.append({
             "Equipa": team,
             "Ataque relativo": model["attack"][team],
-            "PropensÃ£o defensiva": model["defence"][team],
+            "Propensão defensiva": model["defence"][team],
             "Jogos em casa": int((df["Casa"] == team).sum()),
             "Jogos fora": int((df["Fora"] == team).sum()),
         })
     strength_df = pd.DataFrame(strength_rows).sort_values("Ataque relativo", ascending=False)
     st.dataframe(
         strength_df.style.format({
-            "Ataque relativo": "{:.3f}", "PropensÃ£o defensiva": "{:.3f}"
+            "Ataque relativo": "{:.3f}", "Propensão defensiva": "{:.3f}"
         }),
         use_container_width=True, hide_index=True
     )
     st.caption(
-        "Ataque relativo acima de 1 indica forÃ§a ofensiva acima da mÃ©dia estimada. "
-        "PropensÃ£o defensiva acima de 1 indica tendÃªncia para sofrer mais golos; "
+        "Ataque relativo acima de 1 indica força ofensiva acima da média estimada. "
+        "Propensão defensiva acima de 1 indica tendência para sofrer mais golos; "
         "abaixo de 1 indica uma defesa mais forte."
     )
-    st.subheader("Matriz de resultados (0â€“6; o resto Ã© agregado no cÃ¡lculo)")
+    st.subheader("Matriz de resultados (0–6; o resto é agregado no cálculo)")
     matrix_df = make_score_matrix(prediction["Matriz"], display_max=6)
     st.dataframe(
         matrix_df.style.format("{:.1%}").background_gradient(axis=None),
@@ -792,7 +792,7 @@ with tab3:
         for j in range(prediction["Matriz"].shape[1]):
             score_prob.append((i, j, prediction["Matriz"][i, j]))
     top_scores = sorted(score_prob, key=lambda x: x[2], reverse=True)[:5]
-    st.write("**Cinco resultados exatos mais provÃ¡veis**")
+    st.write("**Cinco resultados exatos mais prováveis**")
     st.dataframe(
         pd.DataFrame([
             {"Resultado": f"{h}-{a}", "Probabilidade": p}
@@ -802,11 +802,11 @@ with tab3:
     )
 
 with tab4:
-    st.subheader("Teste cronolÃ³gico fora da amostra")
+    st.subheader("Teste cronológico fora da amostra")
     st.write(
         "O holdout treina na parte inicial e avalia nos jogos posteriores. "
-        "O walk-forward reajusta periodicamente e avalia em todos os jogos apÃ³s o perÃ­odo mÃ­nimo. "
-        "O walk-forward Ã© o teste mais informativo."
+        "O walk-forward reajusta periodicamente e avalia em todos os jogos após o período mínimo. "
+        "O walk-forward é o teste mais informativo."
     )
 
     col_a, col_b = st.columns(2)
@@ -819,14 +819,14 @@ with tab4:
             st.error(backtest_error)
         else:
             metrics = backtest["metrics"]
-            st.markdown("**Holdout â€” modelo DC vs. baseline de frequÃªncias**")
+            st.markdown("**Holdout — modelo DC vs. baseline de frequências**")
             a, b, c, d = st.columns(4)
             a.metric("Jogos de teste", metrics["Jogos teste avaliados"])
             b.metric("Brier 1X2", f"{metrics['Brier 1X2']:.4f}",
                      f"baseline {metrics['Brier 1X2 (baseline)']:.4f}")
             c.metric("LogLoss 1X2", f"{metrics['LogLoss 1X2']:.4f}",
                      f"baseline {metrics['LogLoss 1X2 (baseline)']:.4f}")
-            d.metric("AcurÃ¡cia 1X2", f"{metrics['AcurÃ¡cia 1X2']:.1%}")
+            d.metric("Acurácia 1X2", f"{metrics['Acurácia 1X2']:.1%}")
             e, f, g = st.columns(3)
             e.metric("Brier Over 2.5", f"{metrics['Brier Over 2.5']:.4f}",
                      f"baseline {metrics['Brier Over 2.5 (baseline)']:.4f}")
@@ -834,8 +834,8 @@ with tab4:
                      f"baseline {metrics['Brier BTTS (baseline)']:.4f}")
             g.metric("Jogos de treino", metrics["Jogos treino"])
             st.caption(
-                "Valores mais baixos sÃ£o melhores. A comparaÃ§Ã£o com o baseline Ã© o que dÃ¡ "
-                "significado ao nÃºmero absoluto: se o modelo nÃ£o bater o baseline, nÃ£o estÃ¡ a acrescentar valor."
+                "Valores mais baixos são melhores. A comparação com o baseline é o que dá "
+                "significado ao número absoluto: se o modelo não bater o baseline, não está a acrescentar valor."
             )
             st.dataframe(
                 backtest["results"].drop(columns=["Real_1X2", "Real_Over25", "Real_BTTS",
@@ -855,12 +855,12 @@ with tab4:
             st.error(wf_error)
         else:
             metrics = wf["metrics"]
-            st.markdown("**Walk-forward â€” janela expansÃ­vel**")
+            st.markdown("**Walk-forward — janela expansível**")
             a, b, c, d = st.columns(4)
             a.metric("Jogos avaliados", metrics["Jogos avaliados"])
             b.metric("Brier 1X2", f"{metrics['Brier 1X2']:.4f}")
             c.metric("LogLoss 1X2", f"{metrics['LogLoss 1X2']:.4f}")
-            d.metric("AcurÃ¡cia 1X2", f"{metrics['AcurÃ¡cia 1X2']:.1%}")
+            d.metric("Acurácia 1X2", f"{metrics['Acurácia 1X2']:.1%}")
             e, f = st.columns(2)
             e.metric("Brier Over 2.5", f"{metrics['Brier Over 2.5']:.4f}")
             f.metric("Brier BTTS", f"{metrics['Brier BTTS']:.4f}")
@@ -875,24 +875,24 @@ with tab4:
             )
 
 with tab5:
-    st.subheader("Curva de calibraÃ§Ã£o")
+    st.subheader("Curva de calibração")
     st.write(
-        "A calibraÃ§Ã£o mostra se as probabilidades previstas correspondem Ã s frequÃªncias observadas. "
-        "Idealmente, os pontos ficam prÃ³ximos da diagonal. Corre primeiro o holdout ou o walk-forward "
-        "para gerar previsÃµes fora da amostra."
+        "A calibração mostra se as probabilidades previstas correspondem às frequências observadas. "
+        "Idealmente, os pontos ficam próximos da diagonal. Corre primeiro o holdout ou o walk-forward "
+        "para gerar previsões fora da amostra."
     )
     st.info(
-        "A calibraÃ§Ã£o usa o Ãºltimo conjunto de previsÃµes gerado (holdout ou walk-forward). "
+        "A calibração usa o último conjunto de previsões gerado (holdout ou walk-forward). "
         "Executa um dos testes no separador Backtesting antes de interpretar esta curva."
     )
-    if st.button("Gerar calibraÃ§Ã£o a partir do walk-forward", type="primary"):
-        with st.spinner("A gerar previsÃµes walk-forward para calibraÃ§Ã£o..."):
+    if st.button("Gerar calibração a partir do walk-forward", type="primary"):
+        with st.spinner("A gerar previsões walk-forward para calibração..."):
             wf, wf_error = run_walk_forward(df, xi=xi, step=wf_step, max_goals=max_goals)
         if wf_error:
             st.error(wf_error)
         else:
             res = wf["results"]
-            st.markdown("**1X2 â€” probabilidade da classe prevista vs. frequÃªncia observada**")
+            st.markdown("**1X2 — probabilidade da classe prevista vs. frequência observada**")
             # Usar a probabilidade da classe prevista (max) vs. acerto
             p_max = res[["P(1)", "P(X)", "P(2)"]].max(axis=1).to_numpy()
             y_hit = (res[["P(1)", "P(X)", "P(2)"]].to_numpy().argmax(axis=1)
@@ -915,22 +915,22 @@ with tab5:
                 use_container_width=True, hide_index=True
             )
             st.caption(
-                "Bin com poucos jogos (N pequeno) tem observaÃ§Ãµes instÃ¡veis â€” interpreta com cautela."
+                "Bin com poucos jogos (N pequeno) tem observações instáveis — interpreta com cautela."
             )
 
-with st.expander("LimitaÃ§Ãµes importantes e interpretaÃ§Ã£o"):
+with st.expander("Limitações importantes e interpretação"):
     st.markdown("""
-    - O modelo usa resultados finais e nÃ£o inclui lesÃµes, alinhamentos, calendÃ¡rio congestionado,
-      xG oficiais ou informaÃ§Ã£o de mercado, salvo se forem integrados separadamente.
-    - O holdout Ã© uma divisÃ£o cronolÃ³gica Ãºnica; o walk-forward reajusta periodicamente e Ã©
-      o teste mais informativo. Mesmo assim, uma Ãºnica Ã©poca tem incerteza considerÃ¡vel.
-    - Compara sempre o modelo com o **baseline de frequÃªncias** no mesmo conjunto de teste.
-      Um Brier absoluto sem baseline nÃ£o diz se o modelo acrescenta valor.
-    - A Ã©poca/competiÃ§Ã£o e a cobertura de jogos dependem do plano da Football-Data.org.
-    - As odds justas sÃ£o o inverso das probabilidades do modelo e nÃ£o incluem margem, custos,
-      limites, variaÃ§Ã£o de odds ou incerteza estatÃ­stica.
-    - A vantagem de casa Ã© decomposta em `Î³_att` (ataque casa) e `Î³_def` (defesa fora),
-      seguindo Dixon-Coles (1997). O produto `Î³_att Ã— Î³_def` Ã© a vantagem total.
-    - NÃ£o hÃ¡ garantia de lucro. Antes de qualquer decisÃ£o, valida o modelo em vÃ¡rias Ã©pocas,
-      ligas e perÃ­odos que nÃ£o foram usados na afinaÃ§Ã£o.
+    - O modelo usa resultados finais e não inclui lesões, alinhamentos, calendário congestionado,
+      xG oficiais ou informação de mercado, salvo se forem integrados separadamente.
+    - O holdout é uma divisão cronológica única; o walk-forward reajusta periodicamente e é
+      o teste mais informativo. Mesmo assim, uma única época tem incerteza considerável.
+    - Compara sempre o modelo com o **baseline de frequências** no mesmo conjunto de teste.
+      Um Brier absoluto sem baseline não diz se o modelo acrescenta valor.
+    - A época/competição e a cobertura de jogos dependem do plano da Football-Data.org.
+    - As odds justas são o inverso das probabilidades do modelo e não incluem margem, custos,
+      limites, variação de odds ou incerteza estatística.
+    - A vantagem de casa é decomposta em `γ_att` (ataque casa) e `γ_def` (defesa fora),
+      seguindo Dixon-Coles (1997). O produto `γ_att × γ_def` é a vantagem total.
+    - Não há garantia de lucro. Antes de qualquer decisão, valida o modelo em várias épocas,
+      ligas e períodos que não foram usados na afinação.
     """)
