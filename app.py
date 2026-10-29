@@ -554,7 +554,18 @@ def make_score_matrix(matrix, display_max=6):
     )
     return df
 
-
+# ---------------------------- Forma Recente ----------------------------
+def get_recent_form(df, team, n=8):
+    """Calcula a forma nos últimos N jogos da equipa (Casa ou Fora)."""
+    team_matches = df[(df["Casa"] == team) | (df["Fora"] == team)].sort_values("Data").tail(n)
+    form = []
+    for _, m in team_matches.iterrows():
+        if m["Casa"] == team:
+            res = "V" if m["Golos_Casa"] > m["Golos_Fora"] else ("E" if m["Golos_Casa"] == m["Golos_Fora"] else "D")
+        else:
+            res = "V" if m["Golos_Fora"] > m["Golos_Casa"] else ("E" if m["Golos_Fora"] == m["Golos_Casa"] else "D")
+        form.append(res)
+    return form
 # ---------------------------- Barra lateral ----------------------------
 with st.sidebar:
     st.header("1. Dados e parâmetros")
@@ -602,335 +613,86 @@ if df.empty:
 if len(df) < 20:
     st.warning(f"Existem apenas {len(df)} jogos. O modelo precisa de pelo menos 20 para ser ajustado com este código.")
 
-# ---------------------------- Visão geral ----------------------------
-st.markdown("### Resumo dos dados")
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Jogos concluídos", f"{len(df)}")
-m2.metric("Equipas encontradas", f"{len(set(df['Casa']) | set(df['Fora']))}")
-m3.metric("Primeiro jogo", str(min(df["Data"])))
-m4.metric("Último jogo", str(max(df["Data"])))
-st.caption("Os resultados são os disponibilizados pela API. Confirma a cobertura da época e do teu plano de API.")
+# ---------------------------- Nova Interface Limpa ----------------------------
+st.markdown("---")
+st.markdown(f"### 🏟️ {home_team} vs {away_team}")
 
-if len(df) < 20:
-    st.stop()
+# 1. Forma (Últimos 8)
+col_f1, col_f2 = st.columns(2)
+with col_f1:
+    st.markdown(f"*Forma {home_team} (últimos 8):*")
+    form_home = get_recent_form(df, home_team, 8)
+    # Usar texto simples em vez de emojis para evitar erros
+    form_home_texto = " ".join([f"[V]" if r == "V" else (f"[E]" if r == "E" else f"[D]") for r in form_home])
+    st.markdown(f"{form_home_texto}")
 
-with st.spinner("A ajustar o modelo por máxima verosimilhança..."):
-    try:
-        model = fit_dixon_coles(df, xi=xi)
-    except Exception as exc:
-        st.error(f"Falha no ajuste do modelo: {exc}")
-        st.stop()
+with col_f2:
+    st.markdown(f"*Forma {away_team} (últimos 8):*")
+    form_away = get_recent_form(df, away_team, 8)
+    form_away_texto = " ".join([f"[V]" if r == "V" else (f"[E]" if r == "E" else f"[D]") for r in form_away])
+    st.markdown(f"{form_away_texto}")
 
-if not model["fit_success"]:
-    st.warning(f"O otimizador não convergiu plenamente: {model['fit_message']}")
+st.markdown("---")
 
-with st.sidebar:
-    st.markdown("---")
-    st.metric("Vantagem de casa estimada", f"{model['home_adv']:.3f}")
-    st.caption(
-        f"Decomposta: γ_att={model['gamma_att']:.3f} (ataque casa) × "
-        f"γ_def={model['gamma_def']:.3f} (defesa fora)"
-    )
-    st.metric("Rho Dixon-Coles estimado", f"{model['rho']:.3f}")
-    st.metric("Média ponderada golos casa", f"{model['league_home_goals']:.2f}")
-    st.metric("Média ponderada golos fora", f"{model['league_away_goals']:.2f}")
-    st.caption(f"Objetivo final (nll + reg): {model['objective']:.2f}")
+# 2. Probabilidades e xG
+col_res1, col_res2, col_res3, col_res4 = st.columns(4)
+col_res1.metric(f"Vitória {home_team}", f"{prediction['Casa']:.1%}")
+col_res2.metric("Empate", f"{prediction['Empate']:.1%}")
+col_res3.metric(f"Vitória {away_team}", f"{prediction['Fora']:.1%}")
+col_res4.metric("Total xG", f"{prediction['xG_Casa'] + prediction['xG_Fora']:.2f}")
 
-teams = sorted(model["teams"])
-col_home, col_away = st.columns(2)
-home_team = col_home.selectbox("🏠 Equipa da casa", teams, key="home_team")
-away_options = [team for team in teams if team != home_team]
-away_team = col_away.selectbox("✈️ Equipa visitante", away_options, key="away_team")
+# 3. Mercados Principais
+st.markdown("#### Principais Mercados")
+col_m1, col_m2, col_m3 = st.columns(3)
+col_m1.metric("Over 2.5 Golos", f"{prediction['Over2.5']:.1%}", f"Odd: {fair_odds(prediction['Over2.5']):.2f}")
+col_m2.metric("Under 2.5 Golos", f"{prediction['Under2.5']:.1%}", f"Odd: {fair_odds(prediction['Under2.5']):.2f}")
+col_m3.metric("Ambas Marcam (BTTS)", f"{prediction['BTTS']:.1%}", f"Odd: {fair_odds(prediction['BTTS']):.2f}")
 
-if home_team not in model["teams"] or away_team not in model["teams"]:
-    st.error("As duas equipas têm de estar presentes nos jogos usados para treinar o modelo.")
-    st.stop()
+# 4. Sugestão Automática
+st.markdown("---")
+st.markdown("### Sugestão de Análise")
+probs = {
+    "Vitória Casa (1)": prediction["Casa"],
+    "Empate (X)": prediction["Empate"],
+    "Vitória Fora (2)": prediction["Fora"],
+    "Over 2.5 Golos": prediction["Over2.5"],
+    "Under 2.5 Golos": prediction["Under2.5"],
+    "Ambas Marcam (BTTS) - Sim": prediction["BTTS"],
+    "Ambas Marcam (BTTS) - Não": prediction["NoBTTS"]
+}
+melhor_mercado = max(probs, key=probs.get)
+melhor_prob = probs[melhor_mercado]
 
-prediction = predict_match(home_team, away_team, model, max_goals=max_goals)
+st.info(f"O modelo aponta *{melhor_mercado}* como a tendência mais forte, com probabilidade de *{melhor_prob:.1%}* (Odd Justa: *{fair_odds(melhor_prob):.2f}*).")
+if melhor_prob > 0.60:
+    st.success("Probabilidade alta. Procura no mercado odds superiores à 'Odd Justa' para encontrares valor.")
+else:
+    st.warning("Probabilidade moderada. Tem cuidado com odds baixas e valida na calculadora de EV.")
 
-# Info de standings (agora usada)
-def standing_info(team):
-    if team in standings and standings[team].get("Posicao") is not None:
-        s = standings[team]
-        return f"#{s['Posicao']} · {s.get('Pontos', '?')} pts · {s.get('Jogos_Feitos', '?')} jogos"
-    return "Sem classificação disponível"
+# 5. Separadores Técnicos
+st.markdown("---")
+tab_analise, tab_tecnico = st.tabs(["Análise Detalhada", "Cálculo de EV"])
 
-st.markdown(f"## {home_team} vs {away_team}")
-st.caption(f"🏠 {standing_info(home_team)}  |  ✈️ {standing_info(away_team)}")
+with tab_analise:
+    st.subheader("Matriz de Resultados Exatos (Top 5)")
+    matrix_df = make_score_matrix(prediction["Matriz"], display_max=5)
+    st.dataframe(matrix_df.style.format("{:.1%}").background_gradient(axis=None), use_container_width=True)
 
-x1, x2, x3 = st.columns(3)
-x1.metric(f"xG {home_team}", f"{prediction['xG_Casa']:.2f}")
-x2.metric(f"xG {away_team}", f"{prediction['xG_Fora']:.2f}")
-x3.metric("Total xG", f"{prediction['xG_Casa'] + prediction['xG_Fora']:.2f}")
-
-st.caption(
-    f"Modelo ajustado com {model['n_matches']} jogos até {model['last_date']}. "
-    f"Estes xG são estimativas do modelo, não xG oficiais de fornecedores."
-)
-
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["📊 Probabilidades", "🎯 Odds e EV", "📈 Equipas e matriz", "🧪 Backtesting", "📐 Calibração"]
-)
-
-with tab1:
-    st.subheader("Mercado 1X2")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Vitória casa (1)", f"{prediction['Casa']:.1%}",
-              f"Odd justa {fair_odds(prediction['Casa']):.2f}")
-    c2.metric("Empate (X)", f"{prediction['Empate']:.1%}",
-              f"Odd justa {fair_odds(prediction['Empate']):.2f}")
-    c3.metric("Vitória fora (2)", f"{prediction['Fora']:.1%}",
-              f"Odd justa {fair_odds(prediction['Fora']):.2f}")
-
-    st.subheader("Mercados de golos")
-    market_rows = [
-        ("Over 0.5", prediction["Over0.5"]),
-        ("Over 1.5", prediction["Over1.5"]),
-        ("Over 2.5", prediction["Over2.5"]),
-        ("Over 3.5", prediction["Over3.5"]),
-        ("Under 1.5", prediction["Under1.5"]),
-        ("Under 2.5", prediction["Under2.5"]),
-        ("Under 3.5", prediction["Under3.5"]),
-        ("BTTS — Sim", prediction["BTTS"]),
-        ("BTTS — Não", prediction["NoBTTS"]),
-    ]
-    markets_df = pd.DataFrame([
-        {"Mercado": name, "Probabilidade": prob, "Odd justa": fair_odds(prob)}
-        for name, prob in market_rows
-    ])
-    st.dataframe(
-        markets_df.style.format({"Probabilidade": "{:.1%}", "Odd justa": "{:.2f}"}),
-        use_container_width=True, hide_index=True
-    )
-    if prediction["Massa_cauda_aproximada"] > 0.005:
-        st.warning(
-            f"A matriz truncada deixa aproximadamente {prediction['Massa_cauda_aproximada']:.2%} "
-            "de massa de probabilidade fora do intervalo antes da normalização. "
-            "Aumenta o máximo de golos e verifica se o resultado estabiliza."
-        )
-    else:
-        st.caption("A massa de probabilidade fora da matriz é pequena para este jogo.")
-
-with tab2:
-    st.write("Introduz as odds decimais disponíveis. O EV é uma estimativa bruta e não inclui a incerteza do modelo.")
-    market_options = {
-        "Vitória casa (1)": "Casa",
-        "Empate (X)": "Empate",
-        "Vitória fora (2)": "Fora",
-        "Over 1.5": "Over1.5",
-        "Over 2.5": "Over2.5",
-        "Over 3.5": "Over3.5",
-        "Under 1.5": "Under1.5",
-        "Under 2.5": "Under2.5",
-        "Under 3.5": "Under3.5",
-        "BTTS — Sim": "BTTS",
-        "BTTS — Não": "NoBTTS",
-    }
-    input_rows = []
-    cols = st.columns(3)
-    for idx, (market_name, key) in enumerate(market_options.items()):
-        with cols[idx % 3]:
-            odd = st.number_input(
-                f"Odd — {market_name}", min_value=1.01, max_value=1000.0,
-                value=2.00, step=0.01, key=f"odd_{key}"
-            )
-        p = prediction[key]
-        ev = expected_value(p, odd)
-        input_rows.append({
-            "Mercado": market_name,
-            "Probabilidade modelo": p,
-            "Odd introduzida": odd,
-            "Odd justa": fair_odds(p),
-            "EV bruto": ev,
-            "Estado indicativo": odds_status(ev),
-        })
-    odds_df = pd.DataFrame(input_rows)
-    st.dataframe(
-        odds_df.style.format({
-            "Probabilidade modelo": "{:.1%}", "Odd introduzida": "{:.2f}",
-            "Odd justa": "{:.2f}", "EV bruto": "{:+.1%}"
-        }),
-        use_container_width=True, hide_index=True
-    )
-    st.warning(
-        "Um EV positivo calculado não prova que exista uma vantagem real. "
-        "Valida primeiro a calibração e o desempenho histórico fora da amostra; "
-        "não uses o Kelly como recomendação automática de aposta."
-    )
-
-with tab3:
-    st.subheader("Forças estimadas das equipas")
-    strength_rows = []
-    for team in teams:
-        strength_rows.append({
-            "Equipa": team,
-            "Ataque relativo": model["attack"][team],
-            "Propensão defensiva": model["defence"][team],
-            "Jogos em casa": int((df["Casa"] == team).sum()),
-            "Jogos fora": int((df["Fora"] == team).sum()),
-        })
-    strength_df = pd.DataFrame(strength_rows).sort_values("Ataque relativo", ascending=False)
-    st.dataframe(
-        strength_df.style.format({
-            "Ataque relativo": "{:.3f}", "Propensão defensiva": "{:.3f}"
-        }),
-        use_container_width=True, hide_index=True
-    )
-    st.caption(
-        "Ataque relativo acima de 1 indica força ofensiva acima da média estimada. "
-        "Propensão defensiva acima de 1 indica tendência para sofrer mais golos; "
-        "abaixo de 1 indica uma defesa mais forte."
-    )
-    st.subheader("Matriz de resultados (0–6; o resto é agregado no cálculo)")
-    matrix_df = make_score_matrix(prediction["Matriz"], display_max=6)
-    st.dataframe(
-        matrix_df.style.format("{:.1%}").background_gradient(axis=None),
-        use_container_width=True
-    )
-    score_prob = []
-    for i in range(prediction["Matriz"].shape[0]):
-        for j in range(prediction["Matriz"].shape[1]):
-            score_prob.append((i, j, prediction["Matriz"][i, j]))
-    top_scores = sorted(score_prob, key=lambda x: x[2], reverse=True)[:5]
-    st.write("**Cinco resultados exatos mais prováveis**")
-    st.dataframe(
-        pd.DataFrame([
-            {"Resultado": f"{h}-{a}", "Probabilidade": p}
-            for h, a, p in top_scores
-        ]).style.format({"Probabilidade": "{:.1%}"}),
-        use_container_width=True, hide_index=True
-    )
-
-with tab4:
-    st.subheader("Teste cronológico fora da amostra")
-    st.write(
-        "O holdout treina na parte inicial e avalia nos jogos posteriores. "
-        "O walk-forward reajusta periodicamente e avalia em todos os jogos após o período mínimo. "
-        "O walk-forward é o teste mais informativo."
-    )
-
-    col_a, col_b = st.columns(2)
-    if col_a.button("Executar holdout", type="primary"):
-        with st.spinner("A executar holdout..."):
-            backtest, backtest_error = run_chronological_backtest(
-                df, xi=xi, train_fraction=train_fraction, max_goals=max_goals
-            )
-        if backtest_error:
-            st.error(backtest_error)
-        else:
-            metrics = backtest["metrics"]
-            st.markdown("**Holdout — modelo DC vs. baseline de frequências**")
-            a, b, c, d = st.columns(4)
-            a.metric("Jogos de teste", metrics["Jogos teste avaliados"])
-            b.metric("Brier 1X2", f"{metrics['Brier 1X2']:.4f}",
-                     f"baseline {metrics['Brier 1X2 (baseline)']:.4f}")
-            c.metric("LogLoss 1X2", f"{metrics['LogLoss 1X2']:.4f}",
-                     f"baseline {metrics['LogLoss 1X2 (baseline)']:.4f}")
-            d.metric("Acurácia 1X2", f"{metrics['Acurácia 1X2']:.1%}")
-            e, f, g = st.columns(3)
-            e.metric("Brier Over 2.5", f"{metrics['Brier Over 2.5']:.4f}",
-                     f"baseline {metrics['Brier Over 2.5 (baseline)']:.4f}")
-            f.metric("Brier BTTS", f"{metrics['Brier BTTS']:.4f}",
-                     f"baseline {metrics['Brier BTTS (baseline)']:.4f}")
-            g.metric("Jogos de treino", metrics["Jogos treino"])
-            st.caption(
-                "Valores mais baixos são melhores. A comparação com o baseline é o que dá "
-                "significado ao número absoluto: se o modelo não bater o baseline, não está a acrescentar valor."
-            )
-            st.dataframe(
-                backtest["results"].drop(columns=["Real_1X2", "Real_Over25", "Real_BTTS",
-                                                  "Brier_1X2_individual"]),
-                use_container_width=True, hide_index=True
-            )
-            csv = backtest["results"].to_csv(index=False).encode("utf-8-sig")
-            st.download_button(
-                "Descarregar resultados do holdout (CSV)",
-                data=csv, file_name="backtest_holdout.csv", mime="text/csv",
-            )
-
-    if col_b.button("Executar walk-forward", type="primary"):
-        with st.spinner("A executar walk-forward (pode demorar)..."):
-            wf, wf_error = run_walk_forward(df, xi=xi, step=wf_step, max_goals=max_goals)
-        if wf_error:
-            st.error(wf_error)
-        else:
-            metrics = wf["metrics"]
-            st.markdown("**Walk-forward — janela expansível**")
-            a, b, c, d = st.columns(4)
-            a.metric("Jogos avaliados", metrics["Jogos avaliados"])
-            b.metric("Brier 1X2", f"{metrics['Brier 1X2']:.4f}")
-            c.metric("LogLoss 1X2", f"{metrics['LogLoss 1X2']:.4f}")
-            d.metric("Acurácia 1X2", f"{metrics['Acurácia 1X2']:.1%}")
-            e, f = st.columns(2)
-            e.metric("Brier Over 2.5", f"{metrics['Brier Over 2.5']:.4f}")
-            f.metric("Brier BTTS", f"{metrics['Brier BTTS']:.4f}")
-            st.dataframe(
-                wf["results"].drop(columns=["Real_1X2", "Real_Over25", "Real_BTTS"]),
-                use_container_width=True, hide_index=True
-            )
-            csv = wf["results"].to_csv(index=False).encode("utf-8-sig")
-            st.download_button(
-                "Descarregar resultados do walk-forward (CSV)",
-                data=csv, file_name="backtest_walk_forward.csv", mime="text/csv",
-            )
-
-with tab5:
-    st.subheader("Curva de calibração")
-    st.write(
-        "A calibração mostra se as probabilidades previstas correspondem às frequências observadas. "
-        "Idealmente, os pontos ficam próximos da diagonal. Corre primeiro o holdout ou o walk-forward "
-        "para gerar previsões fora da amostra."
-    )
-    st.info(
-        "A calibração usa o último conjunto de previsões gerado (holdout ou walk-forward). "
-        "Executa um dos testes no separador Backtesting antes de interpretar esta curva."
-    )
-    if st.button("Gerar calibração a partir do walk-forward", type="primary"):
-        with st.spinner("A gerar previsões walk-forward para calibração..."):
-            wf, wf_error = run_walk_forward(df, xi=xi, step=wf_step, max_goals=max_goals)
-        if wf_error:
-            st.error(wf_error)
-        else:
-            res = wf["results"]
-            st.markdown("**1X2 — probabilidade da classe prevista vs. frequência observada**")
-            # Usar a probabilidade da classe prevista (max) vs. acerto
-            p_max = res[["P(1)", "P(X)", "P(2)"]].max(axis=1).to_numpy()
-            y_hit = (res[["P(1)", "P(X)", "P(2)"]].to_numpy().argmax(axis=1)
-                     == res["Real_1X2"].to_numpy()).astype(float)
-            cal_1x2 = calibration_table(p_max, y_hit, n_bins=8)
-            st.dataframe(
-                cal_1x2.style.format({"Previsto": "{:.2%}", "Observado": "{:.2%}"}),
-                use_container_width=True, hide_index=True
-            )
-            st.markdown("**Over 2.5**")
-            cal_o25 = calibration_table(res["P(Over 2.5)"], res["Real_Over25"], n_bins=8)
-            st.dataframe(
-                cal_o25.style.format({"Previsto": "{:.2%}", "Observado": "{:.2%}"}),
-                use_container_width=True, hide_index=True
-            )
-            st.markdown("**BTTS**")
-            cal_btts = calibration_table(res["P(BTTS)"], res["Real_BTTS"], n_bins=8)
-            st.dataframe(
-                cal_btts.style.format({"Previsto": "{:.2%}", "Observado": "{:.2%}"}),
-                use_container_width=True, hide_index=True
-            )
-            st.caption(
-                "Bin com poucos jogos (N pequeno) tem observações instáveis — interpreta com cautela."
-            )
-
-with st.expander("Limitações importantes e interpretação"):
-    st.markdown("""
-    - O modelo usa resultados finais e não inclui lesões, alinhamentos, calendário congestionado,
-      xG oficiais ou informação de mercado, salvo se forem integrados separadamente.
-    - O holdout é uma divisão cronológica única; o walk-forward reajusta periodicamente e é
-      o teste mais informativo. Mesmo assim, uma única época tem incerteza considerável.
-    - Compara sempre o modelo com o **baseline de frequências** no mesmo conjunto de teste.
-      Um Brier absoluto sem baseline não diz se o modelo acrescenta valor.
-    - A época/competição e a cobertura de jogos dependem do plano da Football-Data.org.
-    - As odds justas são o inverso das probabilidades do modelo e não incluem margem, custos,
-      limites, variação de odds ou incerteza estatística.
-    - A vantagem de casa é decomposta em `γ_att` (ataque casa) e `γ_def` (defesa fora),
-      seguindo Dixon-Coles (1997). O produto `γ_att × γ_def` é a vantagem total.
-    - Não há garantia de lucro. Antes de qualquer decisão, valida o modelo em várias épocas,
-      ligas e períodos que não foram usados na afinação.
-    """)
+with tab_tecnico:
+    st.subheader("Calculadora de Valor (EV)")
+    st.write("Insere as odds da tua casa de apostas para veres se há valor.")
+    col_o1, col_o2 = st.columns(2)
+    with col_o1:
+        odd_casa = st.number_input(f"Odd {home_team}", min_value=1.01, value=2.00, step=0.05)
+        ev_casa = (prediction['Casa'] * odd_casa) - 1
+        st.write(f"EV: *{ev_casa:+.1%}* {'Positivo ✅' if ev_casa > 0 else 'Negativo ❌'}")
+        odd_btts = st.number_input("Odd BTTS Sim", min_value=1.01, value=1.80, step=0.05)
+        ev_btts = (prediction['BTTS'] * odd_btts) - 1
+        st.write(f"EV: *{ev_btts:+.1%}* {'Positivo ✅' if ev_btts > 0 else 'Negativo ❌'}")
+    with col_o2:
+        odd_fora = st.number_input(f"Odd {away_team}", min_value=1.01, value=2.50, step=0.05)
+        ev_fora = (prediction['Fora'] * odd_fora) - 1
+        st.write(f"EV: *{ev_fora:+.1%}* {'Positivo ✅' if ev_fora > 0 else 'Negativo ❌'}")
+        odd_under = st.number_input("Odd Under 2.5", min_value=1.01, value=1.90, step=0.05)
+        ev_under = (prediction['Under2.5'] * odd_under) - 1
+        st.write(f"EV: *{ev_under:+.1%}* {'Positivo ✅' if ev_under > 0 else 'Negativo ❌'}")
