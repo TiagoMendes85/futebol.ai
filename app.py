@@ -7,7 +7,7 @@ import math
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="AI Football Analytics PRO", layout="wide")
 st.title("⚽ AI Football Analytics - Previsões Avançadas")
-st.markdown("Análise preditiva pura (Poisson + Monte Carlo) com Forma Recente equilibrada.")
+st.markdown("Análise preditiva pura (Poisson + Monte Carlo) com Forma Recente e Conselhos.")
 
 CIDADES_EQUIPAS = {
     "FC Barcelona": "Barcelona", "Real Madrid CF": "Madrid", "Manchester United FC": "Manchester",
@@ -35,6 +35,7 @@ LIGAS_DISPONIVEIS = {
 liga_nome = st.sidebar.selectbox("🏆 Escolhe o Campeonato", list(LIGAS_DISPONIVEIS.keys()))
 liga_codigo = LIGAS_DISPONIVEIS[liga_nome]
 
+# --- FUNÇÕES DE DADOS ---
 @st.cache_data(ttl=600)
 def obter_dados_fd(codigo_liga, api_key):
     headers = {'X-Auth-Token': api_key}
@@ -76,6 +77,7 @@ def obter_clima_automatico(nome_equipa):
         return "Normal", "Previsão indisponível"
     except Exception as e: return "Normal", f"Erro clima: {e}"
 
+# --- MOTOR MATEMÁTICO ---
 def calcular_metricas(df):
     if df.empty: return None, None, None
     df = df.sort_values('Data')
@@ -124,19 +126,16 @@ def calcular_metricas(df):
                 elif jogo['Golos_Fora'] == jogo['Golos_Casa']: forma += "E "
                 else: forma += "D "
 
-        # --- PESO SUAVE DA FORMA (MÁX 10%) ---
+        # Peso Suave da Forma (10%)
         pontos_forma = 0
         for letra in forma.split():
             if letra == "V": pontos_forma += 3
             elif letra == "E": pontos_forma += 1
-        
-        fator_forma = 0.90 + (pontos_forma / 15.0) * 0.20 # Varia entre 0.90 e 1.10
+        fator_forma = 0.90 + (pontos_forma / 15.0) * 0.20
 
         stats[equipa] = {
-            'Ataque_Casa': ataque_casa * fator_forma, 
-            'Defesa_Casa': defesa_casa / fator_forma,
-            'Ataque_Fora': ataque_fora * fator_forma, 
-            'Defesa_Fora': defesa_fora / fator_forma,
+            'Ataque_Casa': ataque_casa * fator_forma, 'Defesa_Casa': defesa_casa / fator_forma,
+            'Ataque_Fora': ataque_fora * fator_forma, 'Defesa_Fora': defesa_fora / fator_forma,
             'Forma': forma.strip(), 'CS_Casa': cs_casa, 'CS_Fora': cs_fora, 
             'FTS_Casa': fts_casa, 'FTS_Fora': fts_fora, 'Fator_Forma': fator_forma
         }
@@ -146,10 +145,18 @@ def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
     lambda_casa = stats[casa]['Ataque_Casa'] * stats[fora]['Defesa_Fora'] * med_casa
     lambda_fora = stats[fora]['Ataque_Fora'] * stats[casa]['Defesa_Casa'] * med_fora
 
+    # Cálculo para 1ª Parte (cerca de 45% dos golos)
+    lambda_ht_casa = lambda_casa * 0.45
+    lambda_ht_fora = lambda_fora * 0.45
+
     golos_casa_sim = np.random.poisson(lambda_casa, sims)
     golos_fora_sim = np.random.poisson(lambda_fora, sims)
     total_golos_sim = golos_casa_sim + golos_fora_sim
     
+    golos_ht_casa_sim = np.random.poisson(lambda_ht_casa, sims)
+    golos_ht_fora_sim = np.random.poisson(lambda_ht_fora, sims)
+    total_golos_ht_sim = golos_ht_casa_sim + golos_ht_fora_sim
+
     p_casa = np.mean(golos_casa_sim > golos_fora_sim)
     p_empate = np.mean(golos_casa_sim == golos_fora_sim)
     p_fora = np.mean(golos_casa_sim < golos_fora_sim)
@@ -157,8 +164,14 @@ def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
     p_over25 = np.mean(total_golos_sim > 2.5)
     p_over35 = np.mean(total_golos_sim > 3.5)
     p_btts = np.mean((golos_casa_sim > 0) & (golos_fora_sim > 0))
+    p_over05_ht = np.mean(total_golos_ht_sim > 0.5)
     
-    return {'Casa': p_casa, 'Empate': p_empate, 'Fora': p_fora, 'Over1.5': p_over15, 'Over2.5': p_over25, 'Over3.5': p_over35, 'BTTS': p_btts, 'xG_Casa': lambda_casa, 'xG_Fora': lambda_fora}
+    return {
+        'Casa': p_casa, 'Empate': p_empate, 'Fora': p_fora, 
+        'Over1.5': p_over15, 'Over2.5': p_over25, 'Over3.5': p_over35, 
+        'BTTS': p_btts, 'Over05_HT': p_over05_ht, 
+        'xG_Casa': lambda_casa, 'xG_Fora': lambda_fora
+    }
 
 def gerar_matriz_resultados(lambda_casa, lambda_fora, max_golos=5):
     def calc_poisson(k, lamb): return (math.exp(-lamb) * (lamb**k)) / math.factorial(k)
@@ -170,6 +183,19 @@ def gerar_matriz_resultados(lambda_casa, lambda_fora, max_golos=5):
     columns = [f"{j} Golos (Fora)" for j in range(max_golos)]
     return pd.DataFrame(matriz, index=index, columns=columns)
 
+def gerar_conselho_aposta(ev):
+    if ev > 0.10:
+        return "💎 APOSTA DE OURO (Confiança Muito Alta)"
+    elif ev > 0.05:
+        return "✅ APOSTA FORTE (Confiança Alta)"
+    elif ev > 0:
+        return "⚠️ APOSTA DE RISCO (Confiança Média)"
+    elif ev > -0.05:
+        return "⚪ NEUTRO (Sem Valor)"
+    else:
+        return "❌ NÃO APOSTAR (EV Negativo)"
+
+# --- INTERFACE PRINCIPAL ---
 if not API_KEY:
     st.warning("⚠️ Insere a tua API Key na barra lateral para começar.")
 else:
@@ -197,45 +223,48 @@ else:
                     c1.metric("Vitória Casa (1)", f"{res['Casa']:.1%}")
                     c2.metric("Empate (X)", f"{res['Empate']:.1%}")
                     c3.metric("Vitória Fora (2)", f"{res['Fora']:.1%}")
+                    
                     c4, c5, c6 = st.columns(3)
                     c4.metric("Mais de 1.5 Golos", f"{res['Over1.5']:.1%}")
                     c5.metric("Mais de 2.5 Golos", f"{res['Over2.5']:.1%}")
                     c6.metric("Mais de 3.5 Golos", f"{res['Over3.5']:.1%}")
-                    st.metric("Ambas Marcam (BTTS)", f"{res['BTTS']:.1%}")
+                    
+                    c7, c8 = st.columns(2)
+                    c7.metric("Ambas Marcam (BTTS)", f"{res['BTTS']:.1%}")
+                    c8.metric("Mais de 0.5 Golos 1ª Parte (HT)", f"{res['Over05_HT']:.1%}")
                     
                     st.markdown("### 💡 Odds Justas e Value Bet")
                     col_o1, col_o2, col_o3 = st.columns(3)
                     odd_1 = col_o1.number_input("Odd Casa (1)", min_value=1.01, step=0.01, value=float(round(1/res['Casa'], 2)))
                     odd_X = col_o2.number_input("Odd Empate (X)", min_value=1.01, step=0.01, value=float(round(1/res['Empate'], 2)))
                     odd_2 = col_o3.number_input("Odd Fora (2)", min_value=1.01, step=0.01, value=float(round(1/res['Fora'], 2)))
-                    col_o4, col_o5 = st.columns(2)
+                    
+                    col_o4, col_o5, col_o6 = st.columns(3)
                     odd_over25 = col_o4.number_input("Odd Mais de 2.5 Golos", min_value=1.01, step=0.01, value=float(round(1/res['Over2.5'], 2)))
                     odd_btts = col_o5.number_input("Odd Ambas Marcam (BTTS)", min_value=1.01, step=0.01, value=float(round(1/res['BTTS'], 2)))
+                    odd_ht = col_o6.number_input("Odd Over 0.5 HT", min_value=1.01, step=0.01, value=float(round(1/res['Over05_HT'], 2)))
                     
                     ev_1 = (res['Casa'] * odd_1) - 1
                     ev_X = (res['Empate'] * odd_X) - 1
                     ev_2 = (res['Fora'] * odd_2) - 1
                     ev_over25 = (res['Over2.5'] * odd_over25) - 1
                     ev_btts = (res['BTTS'] * odd_btts) - 1
+                    ev_ht = (res['Over05_HT'] * odd_ht) - 1
                     
-                    kelly_1 = max(0, ((odd_1 * res['Casa']) - 1) / (odd_1 - 1)) if odd_1 > 1.01 else 0.0
-                    kelly_X = max(0, ((odd_X * res['Empate']) - 1) / (odd_X - 1)) if odd_X > 1.01 else 0.0
-                    kelly_2 = max(0, ((odd_2 * res['Fora']) - 1) / (odd_2 - 1)) if odd_2 > 1.01 else 0.0
-                    kelly_over25 = max(0, ((odd_over25 * res['Over2.5']) - 1) / (odd_over25 - 1)) if odd_over25 > 1.01 else 0.0
-                    kelly_btts = max(0, ((odd_btts * res['BTTS']) - 1) / (odd_btts - 1)) if odd_btts > 1.01 else 0.0
-                    
-                    def status_ev(ev, kelly):
-                        if ev > 0.05: return f"🟢 Valor (Apostar {kelly:.1%})"
-                        elif ev > -0.05: return "⚪ Neutro"
-                        else: return "🔴 Sem Valor"
+                    conselho_1 = gerar_conselho_aposta(ev_1)
+                    conselho_X = gerar_conselho_aposta(ev_X)
+                    conselho_2 = gerar_conselho_aposta(ev_2)
+                    conselho_over = gerar_conselho_aposta(ev_over25)
+                    conselho_btts = gerar_conselho_aposta(ev_btts)
+                    conselho_ht = gerar_conselho_aposta(ev_ht)
                     
                     odds_df = pd.DataFrame({
-                        'Mercado': ['Vitória Casa', 'Empate', 'Vitória Fora', 'Mais de 2.5', 'BTTS'],
-                        'Probabilidade': [f"{res['Casa']:.1%}", f"{res['Empate']:.1%}", f"{res['Fora']:.1%}", f"{res['Over2.5']:.1%}", f"{res['BTTS']:.1%}"],
-                        'Odd Justa': [f"{1/res['Casa']:.2f}", f"{1/res['Empate']:.2f}", f"{1/res['Fora']:.2f}", f"{1/res['Over2.5']:.2f}", f"{1/res['BTTS']:.2f}"],
-                        'Odd Inserida': [odd_1, odd_X, odd_2, odd_over25, odd_btts],
-                        'EV': [f"{ev_1:.1%}", f"{ev_X:.1%}", f"{ev_2:.1%}", f"{ev_over25:.1%}", f"{ev_btts:.1%}"],
-                        'Recomendação': [status_ev(ev_1, kelly_1), status_ev(ev_X, kelly_X), status_ev(ev_2, kelly_2), status_ev(ev_over25, kelly_over25), status_ev(ev_btts, kelly_btts)]
+                        'Mercado': ['Vitória Casa', 'Empate', 'Vitória Fora', 'Mais de 2.5', 'BTTS', 'Over 0.5 HT'],
+                        'Probabilidade': [f"{res['Casa']:.1%}", f"{res['Empate']:.1%}", f"{res['Fora']:.1%}", f"{res['Over2.5']:.1%}", f"{res['BTTS']:.1%}", f"{res['Over05_HT']:.1%}"],
+                        'Odd Justa': [f"{1/res['Casa']:.2f}", f"{1/res['Empate']:.2f}", f"{1/res['Fora']:.2f}", f"{1/res['Over2.5']:.2f}", f"{1/res['BTTS']:.2f}", f"{1/res['Over05_HT']:.2f}"],
+                        'Odd Inserida': [odd_1, odd_X, odd_2, odd_over25, odd_btts, odd_ht],
+                        'EV': [f"{ev_1:.1%}", f"{ev_X:.1%}", f"{ev_2:.1%}", f"{ev_over25:.1%}", f"{ev_btts:.1%}", f"{ev_ht:.1%}"],
+                        'Conselho da App': [conselho_1, conselho_X, conselho_2, conselho_over, conselho_btts, conselho_ht]
                     })
                     st.table(odds_df)
 
@@ -244,7 +273,7 @@ else:
                     chart_data = pd.DataFrame({'Equipa': [casa, fora], 'xG': [res['xG_Casa'], res['xG_Fora']]}).set_index('Equipa')
                     st.bar_chart(chart_data, color="#00a86b")
                     
-                    st.markdown("### 🛡️ Estatísticas Visuais (Não afetam o cálculo)")
+                    st.markdown("### 🛡️ Estatísticas Visuais")
                     c_cs1, c_cs2 = st.columns(2)
                     c_cs1.metric(f"Clean Sheets em Casa ({casa})", f"{stats[casa]['CS_Casa']:.1%}")
                     c_cs2.metric(f"Clean Sheets Fora ({fora})", f"{stats[fora]['CS_Fora']:.1%}")
