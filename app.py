@@ -179,6 +179,7 @@ else:
                 
                 with tab1:
                     st.info(f"O modelo projeta um xG de *{res['xG_Casa']:.2f}* para o {casa} e *{res['xG_Fora']:.2f}* para o {fora}.")
+st.markdown(f"*Forma Recente:* {casa} [{stats[casa]['Forma']}] vs {fora} [{stats[fora]['Forma']}]")
                     
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Vitória Casa (1)", f"{res['Casa']:.1%}")
