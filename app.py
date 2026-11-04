@@ -4,16 +4,18 @@ import pandas as pd
 import numpy as np
 import math
 
+# --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="AI Football Analytics PRO", layout="wide")
 st.title("⚽ AI Football Analytics - Previsões Avançadas")
-st.markdown("Análise preditiva pura (Poisson + Monte Carlo) baseada em Golos.")
+st.markdown("Análise preditiva pura (Poisson + Monte Carlo) com Forma Recente equilibrada.")
 
 CIDADES_EQUIPAS = {
     "FC Barcelona": "Barcelona", "Real Madrid CF": "Madrid", "Manchester United FC": "Manchester",
     "Manchester City FC": "Manchester", "Liverpool FC": "Liverpool", "Arsenal FC": "London",
     "Chelsea FC": "London", "Tottenham Hotspur FC": "London", "SL Benfica": "Lisbon",
     "FC Porto": "Porto", "Sporting CP": "Lisbon", "SC Braga": "Braga", "AFC Bournemouth": "Bournemouth",
-    "Newcastle United FC": "Newcastle", "Aston Villa FC": "Birmingham", "Brighton & Hove Albion FC": "Brighton"
+    "Newcastle United FC": "Newcastle", "Aston Villa FC": "Birmingham", "Brighton & Hove Albion FC": "Brighton",
+    "Parma Calcio 1913": "Parma", "Udinese Calcio": "Udine", "CA Paranaense": "Curitiba", "CR Vasco da Gama": "Rio de Janeiro"
 }
 
 st.sidebar.header("1. Configurações")
@@ -122,11 +124,21 @@ def calcular_metricas(df):
                 elif jogo['Golos_Fora'] == jogo['Golos_Casa']: forma += "E "
                 else: forma += "D "
 
+        # --- PESO SUAVE DA FORMA (MÁX 10%) ---
+        pontos_forma = 0
+        for letra in forma.split():
+            if letra == "V": pontos_forma += 3
+            elif letra == "E": pontos_forma += 1
+        
+        fator_forma = 0.90 + (pontos_forma / 15.0) * 0.20 # Varia entre 0.90 e 1.10
+
         stats[equipa] = {
-            'Ataque_Casa': ataque_casa, 'Defesa_Casa': defesa_casa,
-            'Ataque_Fora': ataque_fora, 'Defesa_Fora': defesa_fora,
+            'Ataque_Casa': ataque_casa * fator_forma, 
+            'Defesa_Casa': defesa_casa / fator_forma,
+            'Ataque_Fora': ataque_fora * fator_forma, 
+            'Defesa_Fora': defesa_fora / fator_forma,
             'Forma': forma.strip(), 'CS_Casa': cs_casa, 'CS_Fora': cs_fora, 
-            'FTS_Casa': fts_casa, 'FTS_Fora': fts_fora
+            'FTS_Casa': fts_casa, 'FTS_Fora': fts_fora, 'Fator_Forma': fator_forma
         }
     return stats, media_golos_casa, media_golos_fora
 
@@ -179,7 +191,7 @@ else:
                 
                 with tab1:
                     st.info(f"O modelo projeta um xG de *{res['xG_Casa']:.2f}* para o {casa} e *{res['xG_Fora']:.2f}* para o {fora}.")
-st.markdown(f"*Forma Recente:* {casa} [{stats[casa]['Forma']}] vs {fora} [{stats[fora]['Forma']}]")
+                    st.markdown(f"*Forma Recente:* {casa} [{stats[casa]['Forma']}] (Fator: {stats[casa]['Fator_Forma']:.2f}x) | {fora} [{stats[fora]['Forma']}] (Fator: {stats[fora]['Fator_Forma']:.2f}x)")
                     
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Vitória Casa (1)", f"{res['Casa']:.1%}")
@@ -245,7 +257,7 @@ st.markdown(f"*Forma Recente:* {casa} [{stats[casa]['Forma']}] vs {fora} [{stats
                     st.dataframe(matriz.style.background_gradient(cmap='Greens', axis=None).format("{:.2%}"), use_container_width=True)
 
                 with tab3:
-                    st.markdown("### 🌍 Contexto e H2H (Apenas para Leitura)")
+                    st.markdown("### 🌍 Contexto (Apenas Leitura)")
                     ctx1, ctx2 = st.columns(2)
                     clima, clima_msg = obter_clima_automatico(casa)
                     ctx1.info(f"*📍 Clima:* {clima_msg}")
