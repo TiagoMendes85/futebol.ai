@@ -1,340 +1,265 @@
-import math
-from datetime import date
-
-import numpy as np
-import pandas as pd
-import requests
 import streamlit as st
-from scipy.optimize import minimize
-from scipy.special import gammaln
+import requests
+import pandas as pd
+import numpy as np
+import math
 
-# ============================================================
-# AI FOOTBALL ANALYTICS — v2 (Interface Limpa e Focada)
-# ============================================================
+st.set_page_config(page_title="AI Football Analytics PRO", layout="wide")
+st.title("⚽ AI Football Analytics - Previsões Avançadas")
+st.markdown("Análise preditiva pura (Poisson + Monte Carlo) baseada em Golos.")
 
-np.random.seed(42)
-
-st.set_page_config(page_title="AI Football Analytics", layout="wide")
-st.title("⚽ AI Football Analytics")
-st.caption("Poisson + Dixon-Coles | Análise Rápida e Sugestão de Valor")
-
-# ---------------------------- Configuração ----------------------------
-COMPETITIONS = {
-    "Premier League (Inglaterra)": "PL",
-    "Championship (Inglaterra)": "ELC",
-    "La Liga (Espanha)": "PD",
-    "Serie A (Itália)": "SA",
-    "Bundesliga (Alemanha)": "BL1",
-    "Ligue 1 (França)": "FL1",
-    "Primeira Liga (Portugal)": "PPL",
-    "Eredivisie (Países Baixos)": "DED",
-    "Brasileirão (Brasil)": "BSA",
-    "Champions League": "CL",
+CIDADES_EQUIPAS = {
+    "FC Barcelona": "Barcelona", "Real Madrid CF": "Madrid", "Manchester United FC": "Manchester",
+    "Manchester City FC": "Manchester", "Liverpool FC": "Liverpool", "Arsenal FC": "London",
+    "Chelsea FC": "London", "Tottenham Hotspur FC": "London", "SL Benfica": "Lisbon",
+    "FC Porto": "Porto", "Sporting CP": "Lisbon", "SC Braga": "Braga", "AFC Bournemouth": "Bournemouth",
+    "Newcastle United FC": "Newcastle", "Aston Villa FC": "Birmingham", "Brighton & Hove Albion FC": "Brighton"
 }
 
-DEFAULT_XI = 0.0055
-DEFAULT_MAX_GOALS = 10
-DEFAULT_RHO_LIMIT = 0.20
-API_BASE = "https://api.football-data.org/v4"
+st.sidebar.header("1. Configurações")
+try:
+    API_KEY = st.secrets["API_KEY"]
+    st.sidebar.success("✅ Chave carregada")
+except:
+    API_KEY = st.sidebar.text_input("API Key (Football-Data)", type="password")
 
-# ---------------------------- API e dados ----------------------------
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_competition_data(competition_code: str, season: int, api_key: str):
-    headers = {"X-Auth-Token": api_key}
-    params = {"season": season}
-    try:
-        matches_response = requests.get(
-            f"{API_BASE}/competitions/{competition_code}/matches",
-            headers=headers, params=params, timeout=20
-        )
-        matches_response.raise_for_status()
-        payload = matches_response.json()
-
-        rows = []
-        for match in payload.get("matches", []):
-            score = match.get("score", {}).get("fullTime", {})
-            home_goals, away_goals = score.get("home"), score.get("away")
-            if match.get("status") != "FINISHED" or home_goals is None or away_goals is None:
-                continue
-            rows.append({
-                "Data": pd.to_datetime(match["utcDate"], utc=True).date(),
-                "Casa": match.get("homeTeam", {}).get("name", "Desconhecida"),
-                "Fora": match.get("awayTeam", {}).get("name", "Desconhecida"),
-                "Golos_Casa": int(home_goals),
-                "Golos_Fora": int(away_goals),
-                "Match_ID": match.get("id"),
-            })
-        matches_df = pd.DataFrame(rows)
-        if not matches_df.empty:
-            matches_df["Data"] = pd.to_datetime(matches_df["Data"]).dt.date
-            matches_df = matches_df.drop_duplicates(subset=["Match_ID"]).sort_values("Data").reset_index(drop=True)
-        
-        standings = {}
-        return matches_df, standings, None
-    except Exception as exc:
-        return pd.DataFrame(), {}, f"Erro ao obter dados: {exc}"
-
-def prepare_matches(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty: return pd.DataFrame()
-    result = df.copy()
-    result["Data"] = pd.to_datetime(result["Data"], errors="coerce").dt.date
-    for col in ("Golos_Casa", "Golos_Fora"):
-        result[col] = pd.to_numeric(result[col], errors="coerce")
-    result = result.dropna(subset=["Data", "Casa", "Fora", "Golos_Casa", "Golos_Fora"])
-    result = result[(result["Golos_Casa"] >= 0) & (result["Golos_Fora"] >= 0) & (result["Casa"] != result["Fora"])].copy()
-    result["Golos_Casa"] = result["Golos_Casa"].astype(int)
-    result["Golos_Fora"] = result["Golos_Fora"].astype(int)
-    return result.sort_values("Data").reset_index(drop=True)
-
-# ---------------------------- Modelo ----------------------------
-def time_weights(dates, reference_date=None, xi=DEFAULT_XI):
-    if reference_date is None: reference_date = date.today()
-    day_values = pd.to_datetime(pd.Series(dates)).dt.date
-    age_days = np.array([(reference_date - d).days for d in day_values], dtype=float)
-    age_days = np.maximum(age_days, 0.0)
-    return np.exp(-xi * age_days)
-
-def dc_tau(home_goals, away_goals, lam, mu, rho):
-    if home_goals == 0 and away_goals == 0: return 1.0 - lam * mu * rho
-    if home_goals == 0 and away_goals == 1: return 1.0 + lam * rho
-    if home_goals == 1 and away_goals == 0: return 1.0 + mu * rho
-    if home_goals == 1 and away_goals == 1: return 1.0 - rho
-    return 1.0
-
-def fit_dixon_coles(df: pd.DataFrame, xi=DEFAULT_XI, rho_limit=DEFAULT_RHO_LIMIT):
-    data = prepare_matches(df)
-    if len(data) < 20: raise ValueError("Precisas de pelo menos 20 jogos.")
-
-    teams = sorted(set(data["Casa"]).union(data["Fora"]))
-    team_to_idx = {team: idx for idx, team in enumerate(teams)}
-    home_idx = data["Casa"].map(team_to_idx).to_numpy(dtype=int)
-    away_idx = data["Fora"].map(team_to_idx).to_numpy(dtype=int)
-    gh = data["Golos_Casa"].to_numpy(dtype=int)
-    ga = data["Golos_Fora"].to_numpy(dtype=int)
-    weights = time_weights(data["Data"], xi=xi)
-    n_teams = len(teams)
-
-    initial = np.zeros(2 * n_teams + 3)
-    initial[2 * n_teams] = math.log(1.10)
-    initial[2 * n_teams + 1] = math.log(1.05)
-    initial[2 * n_teams + 2] = -0.05
-
-    def objective(params):
-        attack = params[:n_teams] - np.mean(params[:n_teams])
-        defence = params[n_teams:2 * n_teams] - np.mean(params[n_teams:2 * n_teams])
-        gamma_att = math.exp(params[2 * n_teams])
-        gamma_def = math.exp(params[2 * n_teams + 1])
-        rho = params[2 * n_teams + 2]
-
-        log_lam = attack[home_idx] + defence[away_idx] + math.log(gamma_att)
-        log_mu = attack[away_idx] + defence[home_idx] - math.log(gamma_def)
-        lam = np.clip(np.exp(np.clip(log_lam, -3.0, 2.0)), 0.05, 8.0)
-        mu = np.clip(np.exp(np.clip(log_mu, -3.0, 2.0)), 0.05, 8.0)
-
-        log_prob = gh * np.log(lam) - lam - gammaln(gh + 1) + ga * np.log(mu) - mu - gammaln(ga + 1)
-        tau = np.ones(len(data), dtype=float)
-        both_zero = (gh == 0) & (ga == 0)
-        home_zero_away_one = (gh == 0) & (ga == 1)
-        home_one_away_zero = (gh == 1) & (ga == 0)
-        both_one = (gh == 1) & (ga == 1)
-        
-        tau[both_zero] = 1 - lam[both_zero] * mu[both_zero] * rho
-        tau[home_zero_away_one] = 1 + lam[home_zero_away_one] * rho
-        tau[home_one_away_zero] = 1 + mu[home_one_away_zero] * rho
-        tau[both_one] = 1 - rho
-        if np.any(tau <= 1e-8): return 1e6
-        log_prob += np.log(tau)
-        penalty = 0.01 * (np.sum(attack * 2) + np.sum(defence * 2))
-        return -float(np.sum(weights * log_prob)) + penalty
-
-    bounds = [(-2.5, 2.5)] * (2 * n_teams) + [(math.log(0.75), math.log(1.80)), (math.log(0.75), math.log(1.80)), (-rho_limit, rho_limit)]
-    result = minimize(objective, initial, method="L-BFGS-B", bounds=bounds, options={"maxiter": 2000})
-
-    params = result.x
-    attack = params[:n_teams] - np.mean(params[:n_teams])
-    defence = params[n_teams:2 * n_teams] - np.mean(params[n_teams:2 * n_teams])
-    return {
-        "teams": teams,
-        "attack": dict(zip(teams, np.exp(attack))),
-        "defence": dict(zip(teams, np.exp(defence))),
-        "gamma_att": float(math.exp(params[2 * n_teams])),
-        "gamma_def": float(math.exp(params[2 * n_teams + 1])),
-        "home_adv": float(math.exp(params[2 * n_teams] + params[2 * n_teams + 1])),
-        "rho": float(params[2 * n_teams + 2]),
-        "n_matches": len(data),
-        "fit_success": bool(result.success)
-    }
-
-def poisson_pmf(k, lam):
-    return math.exp(-lam + k * math.log(lam) - math.lgamma(k + 1)) if lam > 0 else (1.0 if k == 0 else 0.0)
-
-def predict_match(home, away, model, max_goals=DEFAULT_MAX_GOALS):
-    lam = float(np.clip(model["attack"][home] * model["defence"][away] * model["gamma_att"], 0.05, 6.0))
-    mu = float(np.clip(model["attack"][away] * model["defence"][home] / model["gamma_def"], 0.05, 6.0))
-
-    home_probs = np.array([poisson_pmf(i, lam) for i in range(max_goals + 1)])
-    away_probs = np.array([poisson_pmf(j, mu) for j in range(max_goals + 1)])
-    matrix = np.outer(home_probs, away_probs)
-
-    rho = model["rho"]
-    matrix[0, 0] *= dc_tau(0, 0, lam, mu, rho)
-    matrix[0, 1] *= dc_tau(0, 1, lam, mu, rho)
-    matrix[1, 0] *= dc_tau(1, 0, lam, mu, rho)
-    matrix[1, 1] *= dc_tau(1, 1, lam, mu, rho)
-    matrix /= matrix.sum()
-
-    totals = np.add.outer(np.arange(max_goals + 1), np.arange(max_goals + 1))
-    btts = float(matrix[1:, 1:].sum())
-    return {
-        "Casa": float(np.tril(matrix, -1).sum()),
-        "Empate": float(np.trace(matrix)),
-        "Fora": float(np.triu(matrix, 1).sum()),
-        "Over2.5": float(matrix[totals >= 3].sum()),
-        "Under2.5": float(matrix[totals <= 2].sum()),
-        "BTTS": btts,
-        "NoBTTS": 1.0 - btts,
-        "xG_Casa": lam,
-        "xG_Fora": mu,
-        "Matriz": matrix
-    }
-
-def fair_odds(p): return 1.0 / p if p > 0 else float("inf")
-
-def get_recent_form(df, team, n=8):
-    team_matches = df[(df["Casa"] == team) | (df["Fora"] == team)].sort_values("Data").tail(n)
-    form = []
-    for _, m in team_matches.iterrows():
-        if m["Casa"] == team:
-            res = "V" if m["Golos_Casa"] > m["Golos_Fora"] else ("E" if m["Golos_Casa"] == m["Golos_Fora"] else "D")
-        else:
-            res = "V" if m["Golos_Fora"] > m["Golos_Casa"] else ("E" if m["Golos_Fora"] == m["Golos_Casa"] else "D")
-        form.append(res)
-    return form
-
-def make_score_matrix(matrix, display_max=5):
-    m = matrix[:display_max + 1, :display_max + 1]
-    return pd.DataFrame(m, index=[f"Casa {i}" for i in range(m.shape[0])], columns=[f"Fora {j}" for j in range(m.shape[1])])
-
-# ---------------------------- Barra Lateral ----------------------------
-with st.sidebar:
-    st.header("1. Dados")
-    try:
-        api_key = st.secrets["API_KEY"]
-        st.success("API carregada")
-    except Exception:
-        api_key = st.text_input("API Key", type="password")
-
-    competition_name = st.selectbox("Campeonato", list(COMPETITIONS.keys()))
-    competition_code = COMPETITIONS[competition_name]
-    current_year = date.today().year
-    season = st.number_input("Ano", min_value=2010, max_value=current_year, value=current_year if date.today().month >= 7 else current_year - 1)
-    reload_button = st.button("🔄 Atualizar dados", use_container_width=True)
-
-if not api_key:
-    st.info("Insere a chave da API.")
-    st.stop()
-
-if reload_button: fetch_competition_data.clear()
-
-with st.spinner("A obter jogos..."):
-    raw_df, standings, api_error = fetch_competition_data(competition_code, int(season), api_key)
-
-if api_error:
-    st.error(api_error)
-    st.stop()
-
-df = prepare_matches(raw_df)
-if df.empty or len(df) < 20:
-    st.warning("Poucos dados para ajustar o modelo.")
-    st.stop()
-
-with st.spinner("A ajustar modelo..."):
-    model = fit_dixon_coles(df)
-
-teams = sorted(model["teams"])
-col_home, col_away = st.columns(2)
-home_team = col_home.selectbox("🏠 Equipa da casa", teams)
-away_options = [t for t in teams if t != home_team]
-away_team = col_away.selectbox("✈️ Equipa visitante", away_options)
-
-prediction = predict_match(home_team, away_team, model)
-
-# ---------------------------- Nova Interface Limpa ----------------------------
-st.markdown("---")
-st.markdown(f"### 🏟️ {home_team} vs {away_team}")
-
-# 1. Forma (Últimos 8)
-col_f1, col_f2 = st.columns(2)
-with col_f1:
-    st.markdown(f"*Forma {home_team}:*")
-    form_home = get_recent_form(df, home_team, 8)
-    st.markdown(" ".join([f"🟢" if r == "V" else (f"🟡" if r == "E" else f"🔴") for r in form_home]))
-with col_f2:
-    st.markdown(f"*Forma {away_team}:*")
-    form_away = get_recent_form(df, away_team, 8)
-    st.markdown(" ".join([f"🟢" if r == "V" else (f"🟡" if r == "E" else f"🔴") for r in form_away]))
-
-st.markdown("---")
-
-# 2. Probabilidades e xG
-col_res1, col_res2, col_res3, col_res4 = st.columns(4)
-col_res1.metric(f"Vitória {home_team}", f"{prediction['Casa']:.1%}")
-col_res2.metric("Empate", f"{prediction['Empate']:.1%}")
-col_res3.metric(f"Vitória {away_team}", f"{prediction['Fora']:.1%}")
-col_res4.metric("Total xG", f"{prediction['xG_Casa'] + prediction['xG_Fora']:.2f}")
-
-# 3. Mercados Principais
-st.markdown("#### 🎯 Principais Mercados")
-col_m1, col_m2, col_m3 = st.columns(3)
-col_m1.metric("Over 2.5 Golos", f"{prediction['Over2.5']:.1%}", f"Odd: {fair_odds(prediction['Over2.5']):.2f}")
-col_m2.metric("Under 2.5 Golos", f"{prediction['Under2.5']:.1%}", f"Odd: {fair_odds(prediction['Under2.5']):.2f}")
-col_m3.metric("Ambas Marcam (BTTS)", f"{prediction['BTTS']:.1%}", f"Odd: {fair_odds(prediction['BTTS']):.2f}")
-
-# 4. Sugestão Automática
-st.markdown("---")
-st.markdown("### 💡 Sugestão de Análise")
-probs = {
-    "Vitória Casa (1)": prediction["Casa"],
-    "Empate (X)": prediction["Empate"],
-    "Vitória Fora (2)": prediction["Fora"],
-    "Over 2.5 Golos": prediction["Over2.5"],
-    "Under 2.5 Golos": prediction["Under2.5"],
-    "Ambas Marcam (BTTS) - Sim": prediction["BTTS"],
-    "Ambas Marcam (BTTS) - Não": prediction["NoBTTS"]
+LIGAS_DISPONIVEIS = {
+    "Premier League (Inglaterra)": "PL", "Championship (2ª Ing.)": "ELC", "La Liga (Espanha)": "PD",
+    "Serie A (Itália)": "SA", "Bundesliga (Alemanha)": "BL1", "Ligue 1 (França)": "FL1",
+    "Primeira Liga (Portugal)": "PPL", "Eredivisie (Holanda)": "DED", "Brasileirão (Brasil)": "BSA",
+    "Champions League": "CL"
 }
-melhor_mercado = max(probs, key=probs.get)
-melhor_prob = probs[melhor_mercado]
 
-st.info(f"O modelo aponta *{melhor_mercado}* como a tendência mais forte, com probabilidade de *{melhor_prob:.1%}* (Odd Justa: *{fair_odds(melhor_prob):.2f}*).")
-if melhor_prob > 0.60:
-    st.success("Probabilidade alta. Procura no mercado odds superiores à 'Odd Justa' para encontrares valor.")
+liga_nome = st.sidebar.selectbox("🏆 Escolhe o Campeonato", list(LIGAS_DISPONIVEIS.keys()))
+liga_codigo = LIGAS_DISPONIVEIS[liga_nome]
+
+@st.cache_data(ttl=600)
+def obter_dados_fd(codigo_liga, api_key):
+    headers = {'X-Auth-Token': api_key}
+    url_matches = f'https://api.football-data.org/v4/competitions/{codigo_liga}/matches'
+    url_standings = f'https://api.football-data.org/v4/competitions/{codigo_liga}/standings'
+    res_matches = requests.get(url_matches, headers=headers)
+    res_standings = requests.get(url_standings, headers=headers)
+    if res_matches.status_code != 200: return None, None
+    dados_matches = res_matches.json()
+    dados_standings = res_standings.json() if res_standings.status_code == 200 else None
+    jogos = []
+    for match in dados_matches['matches']:
+        if match['status'] == 'FINISHED':
+            gc, gf = match['score']['fullTime']['home'], match['score']['fullTime']['away']
+            if gc is not None and gf is not None:
+                jogos.append({'Data': pd.to_datetime(match['utcDate']).date(), 'Casa': match['homeTeam']['name'], 'Fora': match['awayTeam']['name'], 'Golos_Casa': int(gc), 'Golos_Fora': int(gf)})
+    df = pd.DataFrame(jogos)
+    tabela = {}
+    if dados_standings:
+        for table in dados_standings['standings']:
+            if table['type'] == 'TOTAL':
+                for entry in table['table']:
+                    tabela[entry['team']['name']] = {'Posicao': entry['position'], 'Pontos': entry['points'], 'Jogos_Feitos': entry['playedGames']}
+    return df, tabela
+
+@st.cache_data(ttl=3600)
+def obter_clima_automatico(nome_equipa):
+    try:
+        nome_limpo = nome_equipa.replace(" FC", "").replace(" CF", "").replace(" SC", "").replace(" AC", "").replace(" AFC", "").strip()
+        cidade = CIDADES_EQUIPAS.get(nome_equipa, nome_limpo)
+        geo_res = requests.get(f"https://geocoding-api.open-meteo.com/v1/search?name={cidade}&count=1&language=en&format=json", timeout=10).json()
+        if 'results' not in geo_res or len(geo_res['results']) == 0: return "Normal", f"Cidade não encontrada: {cidade}"
+        lat, lon = geo_res['results'][0]['latitude'], geo_res['results'][0]['longitude']
+        weather_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=precipitation_sum&timezone=auto&forecast_days=1", timeout=10).json()
+        if 'daily' in weather_res and 'precipitation_sum' in weather_res['daily']:
+            precip = weather_res['daily']['precipitation_sum'][0]
+            if precip is not None and precip > 5.0: return "Chuva Forte / Mau Tempo", f"{cidade}: {precip:.1f}mm de chuva"
+            return "Normal", f"{cidade}: {precip:.1f}mm de chuva"
+        return "Normal", "Previsão indisponível"
+    except Exception as e: return "Normal", f"Erro clima: {e}"
+
+def calcular_metricas(df):
+    if df.empty: return None, None, None
+    df = df.sort_values('Data')
+    
+    df['Peso'] = df.index.map(lambda x: 2.5 if x >= len(df) - 15 else 1.0)
+    media_golos_casa = np.average(df['Golos_Casa'], weights=df['Peso'])
+    media_golos_fora = np.average(df['Golos_Fora'], weights=df['Peso'])
+    if media_golos_casa == 0: media_golos_casa = 1.4
+    if media_golos_fora == 0: media_golos_fora = 1.2
+    
+    stats = {}
+    equipas = set(df['Casa']).union(set(df['Fora']))
+    
+    for equipa in equipas:
+        jogos_casa = df[df['Casa'] == equipa]
+        jogos_fora = df[df['Fora'] == equipa]
+        jogos_c = len(jogos_casa)
+        jogos_f = len(jogos_fora)
+        peso_c = jogos_c / (jogos_c + 5.0)
+        peso_f = jogos_f / (jogos_f + 5.0)
+        
+        ataque_casa_bruto = np.average(jogos_casa['Golos_Casa'], weights=jogos_casa['Peso']) / media_golos_casa if jogos_c > 0 else 1.0
+        defesa_casa_bruto = np.average(jogos_casa['Golos_Fora'], weights=jogos_casa['Peso']) / media_golos_fora if jogos_c > 0 else 1.0
+        ataque_fora_bruto = np.average(jogos_fora['Golos_Fora'], weights=jogos_fora['Peso']) / media_golos_fora if jogos_f > 0 else 1.0
+        defesa_fora_bruto = np.average(jogos_fora['Golos_Casa'], weights=jogos_fora['Peso']) / media_golos_casa if jogos_f > 0 else 1.0
+        
+        ataque_casa = (ataque_casa_bruto * peso_c) + (1.0 * (1 - peso_c))
+        defesa_casa = (defesa_casa_bruto * peso_c) + (1.0 * (1 - peso_c))
+        ataque_fora = (ataque_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
+        defesa_fora = (defesa_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
+        
+        cs_casa = (jogos_casa['Golos_Fora'] == 0).sum() / jogos_c if jogos_c > 0 else 0.25
+        cs_fora = (jogos_fora['Golos_Casa'] == 0).sum() / jogos_f if jogos_f > 0 else 0.25
+        fts_casa = (jogos_casa['Golos_Casa'] == 0).sum() / jogos_c if jogos_c > 0 else 0.25
+        fts_fora = (jogos_fora['Golos_Fora'] == 0).sum() / jogos_f if jogos_f > 0 else 0.25
+            
+        ultimos_jogos = df[(df['Casa'] == equipa) | (df['Fora'] == equipa)].tail(5)
+        forma = ""
+        for _, jogo in ultimos_jogos.iterrows():
+            if jogo['Casa'] == equipa:
+                if jogo['Golos_Casa'] > jogo['Golos_Fora']: forma += "V "
+                elif jogo['Golos_Casa'] == jogo['Golos_Fora']: forma += "E "
+                else: forma += "D "
+            else:
+                if jogo['Golos_Fora'] > jogo['Golos_Casa']: forma += "V "
+                elif jogo['Golos_Fora'] == jogo['Golos_Casa']: forma += "E "
+                else: forma += "D "
+
+        stats[equipa] = {
+            'Ataque_Casa': ataque_casa, 'Defesa_Casa': defesa_casa,
+            'Ataque_Fora': ataque_fora, 'Defesa_Fora': defesa_fora,
+            'Forma': forma.strip(), 'CS_Casa': cs_casa, 'CS_Fora': cs_fora, 
+            'FTS_Casa': fts_casa, 'FTS_Fora': fts_fora
+        }
+    return stats, media_golos_casa, media_golos_fora
+
+def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
+    lambda_casa = stats[casa]['Ataque_Casa'] * stats[fora]['Defesa_Fora'] * med_casa
+    lambda_fora = stats[fora]['Ataque_Fora'] * stats[casa]['Defesa_Casa'] * med_fora
+
+    golos_casa_sim = np.random.poisson(lambda_casa, sims)
+    golos_fora_sim = np.random.poisson(lambda_fora, sims)
+    total_golos_sim = golos_casa_sim + golos_fora_sim
+    
+    p_casa = np.mean(golos_casa_sim > golos_fora_sim)
+    p_empate = np.mean(golos_casa_sim == golos_fora_sim)
+    p_fora = np.mean(golos_casa_sim < golos_fora_sim)
+    p_over15 = np.mean(total_golos_sim > 1.5)
+    p_over25 = np.mean(total_golos_sim > 2.5)
+    p_over35 = np.mean(total_golos_sim > 3.5)
+    p_btts = np.mean((golos_casa_sim > 0) & (golos_fora_sim > 0))
+    
+    return {'Casa': p_casa, 'Empate': p_empate, 'Fora': p_fora, 'Over1.5': p_over15, 'Over2.5': p_over25, 'Over3.5': p_over35, 'BTTS': p_btts, 'xG_Casa': lambda_casa, 'xG_Fora': lambda_fora}
+
+def gerar_matriz_resultados(lambda_casa, lambda_fora, max_golos=5):
+    def calc_poisson(k, lamb): return (math.exp(-lamb) * (lamb**k)) / math.factorial(k)
+    matriz = np.zeros((max_golos, max_golos))
+    for i in range(max_golos):
+        for j in range(max_golos):
+            matriz[i, j] = calc_poisson(i, lambda_casa) * calc_poisson(j, lambda_fora)
+    index = [f"{i} Golos (Casa)" for i in range(max_golos)]
+    columns = [f"{j} Golos (Fora)" for j in range(max_golos)]
+    return pd.DataFrame(matriz, index=index, columns=columns)
+
+if not API_KEY:
+    st.warning("⚠️ Insere a tua API Key na barra lateral para começar.")
 else:
-    st.warning("Probabilidade moderada. Tem cuidado com odds baixas e valida na calculadora de EV.")
+    with st.spinner('A processar dados...'):
+        df, tabela = obter_dados_fd(liga_codigo, API_KEY)
+    if df is not None and not df.empty:
+        stats, med_casa, med_fora = calcular_metricas(df)
+        col1, col2 = st.columns(2)
+        equipas = sorted(list(stats.keys()))
+        casa = col1.selectbox("🏠 Equipa da Casa", equipas)
+        fora = col2.selectbox("✈️ Equipa de Fora", equipas)
+        
+        if st.button("🚀 Gerar Análise Completa", use_container_width=True):
+            if casa != fora:
+                res = prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora)
+                
+                st.markdown(f"## 🏆 Análise: {casa} vs {fora}")
+                tab1, tab2, tab3 = st.tabs(["📊 Resumo e Odds", "📈 Estatísticas Puras", "⚔️ H2H e Contexto"])
+                
+                with tab1:
+                    st.info(f"O modelo projeta um xG de *{res['xG_Casa']:.2f}* para o {casa} e *{res['xG_Fora']:.2f}* para o {fora}.")
+                    
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Vitória Casa (1)", f"{res['Casa']:.1%}")
+                    c2.metric("Empate (X)", f"{res['Empate']:.1%}")
+                    c3.metric("Vitória Fora (2)", f"{res['Fora']:.1%}")
+                    c4, c5, c6 = st.columns(3)
+                    c4.metric("Mais de 1.5 Golos", f"{res['Over1.5']:.1%}")
+                    c5.metric("Mais de 2.5 Golos", f"{res['Over2.5']:.1%}")
+                    c6.metric("Mais de 3.5 Golos", f"{res['Over3.5']:.1%}")
+                    st.metric("Ambas Marcam (BTTS)", f"{res['BTTS']:.1%}")
+                    
+                    st.markdown("### 💡 Odds Justas e Value Bet")
+                    col_o1, col_o2, col_o3 = st.columns(3)
+                    odd_1 = col_o1.number_input("Odd Casa (1)", min_value=1.01, step=0.01, value=float(round(1/res['Casa'], 2)))
+                    odd_X = col_o2.number_input("Odd Empate (X)", min_value=1.01, step=0.01, value=float(round(1/res['Empate'], 2)))
+                    odd_2 = col_o3.number_input("Odd Fora (2)", min_value=1.01, step=0.01, value=float(round(1/res['Fora'], 2)))
+                    col_o4, col_o5 = st.columns(2)
+                    odd_over25 = col_o4.number_input("Odd Mais de 2.5 Golos", min_value=1.01, step=0.01, value=float(round(1/res['Over2.5'], 2)))
+                    odd_btts = col_o5.number_input("Odd Ambas Marcam (BTTS)", min_value=1.01, step=0.01, value=float(round(1/res['BTTS'], 2)))
+                    
+                    ev_1 = (res['Casa'] * odd_1) - 1
+                    ev_X = (res['Empate'] * odd_X) - 1
+                    ev_2 = (res['Fora'] * odd_2) - 1
+                    ev_over25 = (res['Over2.5'] * odd_over25) - 1
+                    ev_btts = (res['BTTS'] * odd_btts) - 1
+                    
+                    kelly_1 = max(0, ((odd_1 * res['Casa']) - 1) / (odd_1 - 1)) if odd_1 > 1.01 else 0.0
+                    kelly_X = max(0, ((odd_X * res['Empate']) - 1) / (odd_X - 1)) if odd_X > 1.01 else 0.0
+                    kelly_2 = max(0, ((odd_2 * res['Fora']) - 1) / (odd_2 - 1)) if odd_2 > 1.01 else 0.0
+                    kelly_over25 = max(0, ((odd_over25 * res['Over2.5']) - 1) / (odd_over25 - 1)) if odd_over25 > 1.01 else 0.0
+                    kelly_btts = max(0, ((odd_btts * res['BTTS']) - 1) / (odd_btts - 1)) if odd_btts > 1.01 else 0.0
+                    
+                    def status_ev(ev, kelly):
+                        if ev > 0.05: return f"🟢 Valor (Apostar {kelly:.1%})"
+                        elif ev > -0.05: return "⚪ Neutro"
+                        else: return "🔴 Sem Valor"
+                    
+                    odds_df = pd.DataFrame({
+                        'Mercado': ['Vitória Casa', 'Empate', 'Vitória Fora', 'Mais de 2.5', 'BTTS'],
+                        'Probabilidade': [f"{res['Casa']:.1%}", f"{res['Empate']:.1%}", f"{res['Fora']:.1%}", f"{res['Over2.5']:.1%}", f"{res['BTTS']:.1%}"],
+                        'Odd Justa': [f"{1/res['Casa']:.2f}", f"{1/res['Empate']:.2f}", f"{1/res['Fora']:.2f}", f"{1/res['Over2.5']:.2f}", f"{1/res['BTTS']:.2f}"],
+                        'Odd Inserida': [odd_1, odd_X, odd_2, odd_over25, odd_btts],
+                        'EV': [f"{ev_1:.1%}", f"{ev_X:.1%}", f"{ev_2:.1%}", f"{ev_over25:.1%}", f"{ev_btts:.1%}"],
+                        'Recomendação': [status_ev(ev_1, kelly_1), status_ev(ev_X, kelly_X), status_ev(ev_2, kelly_2), status_ev(ev_over25, kelly_over25), status_ev(ev_btts, kelly_btts)]
+                    })
+                    st.table(odds_df)
 
-# 5. Separadores Técnicos
-st.markdown("---")
-tab_analise, tab_tecnico = st.tabs(["📊 Análise Detalhada", "⚙️ Cálculo de EV"])
+                with tab2:
+                    st.markdown("### 📊 Comparação de Força (xG Esperado)")
+                    chart_data = pd.DataFrame({'Equipa': [casa, fora], 'xG': [res['xG_Casa'], res['xG_Fora']]}).set_index('Equipa')
+                    st.bar_chart(chart_data, color="#00a86b")
+                    
+                    st.markdown("### 🛡️ Estatísticas Visuais (Não afetam o cálculo)")
+                    c_cs1, c_cs2 = st.columns(2)
+                    c_cs1.metric(f"Clean Sheets em Casa ({casa})", f"{stats[casa]['CS_Casa']:.1%}")
+                    c_cs2.metric(f"Clean Sheets Fora ({fora})", f"{stats[fora]['CS_Fora']:.1%}")
+                    c_fts1, c_fts2 = st.columns(2)
+                    c_fts1.metric(f"Failed to Score ({casa})", f"{stats[casa]['FTS_Casa']:.1%}")
+                    c_fts2.metric(f"Failed to Score ({fora})", f"{stats[fora]['FTS_Fora']:.1%}")
 
-with tab_analise:
-    st.subheader("Matriz de Resultados Exatos (Top 5)")
-    matrix_df = make_score_matrix(prediction["Matriz"], display_max=5)
-    st.dataframe(matrix_df.style.format("{:.1%}").background_gradient(axis=None), use_container_width=True)
+                    st.markdown("### 🎯 Resultados Exatos")
+                    matriz = gerar_matriz_resultados(res['xG_Casa'], res['xG_Fora'])
+                    st.dataframe(matriz.style.background_gradient(cmap='Greens', axis=None).format("{:.2%}"), use_container_width=True)
 
-with tab_tecnico:
-    st.subheader("Calculadora de Valor (EV)")
-    st.write("Insere as odds da tua casa de apostas para veres se há valor.")
-    col_o1, col_o2 = st.columns(2)
-    with col_o1:
-        odd_casa = st.number_input(f"Odd {home_team}", min_value=1.01, value=2.00, step=0.05)
-        ev_casa = (prediction['Casa'] * odd_casa) - 1
-        st.write(f"EV: *{ev_casa:+.1%}* {'✅ Positivo' if ev_casa > 0 else '❌ Negativo'}")
-        odd_btts = st.number_input("Odd BTTS Sim", min_value=1.01, value=1.80, step=0.05)
-        ev_btts = (prediction['BTTS'] * odd_btts) - 1
-        st.write(f"EV: *{ev_btts:+.1%}* {'✅ Positivo' if ev_btts > 0 else '❌ Negativo'}")
-    with col_o2:
-        odd_fora = st.number_input(f"Odd {away_team}", min_value=1.01, value=2.50, step=0.05)
-        ev_fora = (prediction['Fora'] * odd_fora) - 1
-        st.write(f"EV: *{ev_fora:+.1%}* {'✅ Positivo' if ev_fora > 0 else '❌ Negativo'}")
-        odd_under = st.number_input("Odd Under 2.5", min_value=1.01, value=1.90, step=0.05)
-        ev_under = (prediction['Under2.5'] * odd_under) - 1
-        st.write(f"EV: *{ev_under:+.1%}* {'✅ Positivo' if ev_under > 0 else '❌ Negativo'}")
+                with tab3:
+                    st.markdown("### 🌍 Contexto e H2H (Apenas para Leitura)")
+                    ctx1, ctx2 = st.columns(2)
+                    clima, clima_msg = obter_clima_automatico(casa)
+                    ctx1.info(f"*📍 Clima:* {clima_msg}")
+                    ctx2.info(f"*Forma:* {casa} [{stats[casa]['Forma']}] vs {fora} [{stats[fora]['Forma']}]")
+                    
+                    st.markdown("### 🤝 Histórico H2H (Últimos 5)")
+                    h2h_jogos = df[((df['Casa'] == casa) & (df['Fora'] == fora)) | ((df['Casa'] == fora) & (df['Fora'] == casa))].tail(5)
+                    if not h2h_jogos.empty:
+                        h2h_display = h2h_jogos[['Data', 'Casa', 'Golos_Casa', 'Golos_Fora', 'Fora']].copy()
+                        h2h_display['Resultado'] = h2h_display['Golos_Casa'].astype(str) + " - " + h2h_display['Golos_Fora'].astype(str)
+                        st.dataframe(h2h_display[['Data', 'Casa', 'Resultado', 'Fora']], hide_index=True, use_container_width=True)
+                    else:
+                        st.info("Sem dados de H2H recentes.")
+
+            else:
+                st.error("Seleciona equipas diferentes.")
+    else:
+        st.error("⚠️ Não foi possível carregar os dados. Verifica a API Key ou espera 1 minuto (limite de pedidos).")
