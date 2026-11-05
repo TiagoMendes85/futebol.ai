@@ -385,7 +385,8 @@ else:
                         
                         df_liga = pd.DataFrame(dados_liga)
                         st.dataframe(
-                            df_liga.style.background_gradient(subset=['Tendência'], cmap='RdYlGn', vmin=-2, vmax=2),
+                            df_liga.style.background_gradient(subset=['Tendência'], cmap='RdYlGn', vmin=-2, vmax=2)
+                            .format({'PPG Campeonato': "{:.2f}", 'PPG Forma Recente': "{:.2f}", 'Tendência': "{:.2f}"}),
                             hide_index=True, 
                             use_container_width=True
                         )
