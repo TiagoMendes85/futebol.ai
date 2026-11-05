@@ -32,7 +32,11 @@ LIGAS_DISPONIVEIS = {
     "Champions League": "CL"
 }
 
-liga_nome = st.sidebar.selectbox("🏆 Escolhe o Campeonato", list(LIGAS_DISPONIVEIS.keys()))
+# Filtro de Ligas
+ligas_filtradas = st.sidebar.multiselect("Filtrar Ligas (Opcional)", options=list(LIGAS_DISPONIVEIS.keys()), default=list(LIGAS_DISPONIVEIS.keys()))
+if not ligas_filtradas: ligas_filtradas = list(LIGAS_DISPONIVEIS.keys())
+
+liga_nome = st.sidebar.selectbox("🏆 Escolhe o Campeonato", ligas_filtradas)
 liga_codigo = LIGAS_DISPONIVEIS[liga_nome]
 
 # --- FUNÇÕES DE DADOS ---
@@ -126,7 +130,6 @@ def calcular_metricas(df):
                 elif jogo['Golos_Fora'] == jogo['Golos_Casa']: forma += "E "
                 else: forma += "D "
 
-        # Peso Suave da Forma (10%)
         pontos_forma = 0
         for letra in forma.split():
             if letra == "V": pontos_forma += 3
@@ -145,7 +148,6 @@ def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
     lambda_casa = stats[casa]['Ataque_Casa'] * stats[fora]['Defesa_Fora'] * med_casa
     lambda_fora = stats[fora]['Ataque_Fora'] * stats[casa]['Defesa_Casa'] * med_fora
 
-    # Cálculo para 1ª Parte (cerca de 45% dos golos)
     lambda_ht_casa = lambda_casa * 0.45
     lambda_ht_fora = lambda_fora * 0.45
 
@@ -184,16 +186,19 @@ def gerar_matriz_resultados(lambda_casa, lambda_fora, max_golos=5):
     return pd.DataFrame(matriz, index=index, columns=columns)
 
 def gerar_conselho_aposta(ev):
-    if ev > 0.10:
-        return "💎 APOSTA DE OURO (Confiança Muito Alta)"
-    elif ev > 0.05:
-        return "✅ APOSTA FORTE (Confiança Alta)"
-    elif ev > 0:
-        return "⚠️ APOSTA DE RISCO (Confiança Média)"
-    elif ev > -0.05:
-        return "⚪ NEUTRO (Sem Valor)"
-    else:
-        return "❌ NÃO APOSTAR (EV Negativo)"
+    if ev > 0.10: return "💎 APOSTA DE OURO (Confiança Muito Alta)"
+    elif ev > 0.05: return "✅ APOSTA FORTE (Confiança Alta)"
+    elif ev > 0: return "⚠️ APOSTA DE RISCO (Confiança Média)"
+    elif ev > -0.05: return "⚪ NEUTRO (Sem Valor)"
+    else: return "❌ NÃO APOSTAR (EV Negativo)"
+
+def calcular_indice_confianca(probabilidades):
+    max_prob = max([probabilidades['Casa'], probabilidades['Empate'], probabilidades['Fora']])
+    if probabilidades['Over2.5'] > 0.65 or probabilidades['Over2.5'] < 0.35: max_prob += 0.1
+    if probabilidades['BTTS'] > 0.65 or probabilidades['BTTS'] < 0.35: max_prob += 0.1
+    if probabilidades['Over05_HT'] > 0.75: max_prob += 0.05
+    indice = min(10, int((max_prob / 0.85) * 10))
+    return max(1, indice)
 
 # --- INTERFACE PRINCIPAL ---
 if not API_KEY:
@@ -213,11 +218,17 @@ else:
                 res = prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora)
                 
                 st.markdown(f"## 🏆 Análise: {casa} vs {fora}")
-                tab1, tab2, tab3 = st.tabs(["📊 Resumo e Odds", "📈 Estatísticas Puras", "⚔️ H2H e Contexto"])
+                
+                # Índice de Confiança
+                indice = calcular_indice_confianca(res)
+                st.markdown(f"### 🎯 Índice de Confiança do Modelo: **{indice}/10**")
+                st.progress(indice / 10)
+                
+                tab1, tab2, tab3, tab4 = st.tabs(["📊 Resumo e Odds", "📈 Estatísticas Puras", "⚔️ H2H e Contexto", "🏆 Classificação da Liga"])
                 
                 with tab1:
-                    st.info(f"O modelo projeta um xG de *{res['xG_Casa']:.2f}* para o {casa} e *{res['xG_Fora']:.2f}* para o {fora}.")
-                    st.markdown(f"*Forma Recente:* {casa} [{stats[casa]['Forma']}] (Fator: {stats[casa]['Fator_Forma']:.2f}x) | {fora} [{stats[fora]['Forma']}] (Fator: {stats[fora]['Fator_Forma']:.2f}x)")
+                    st.info(f"O modelo projeta um xG de **{res['xG_Casa']:.2f}** para o {casa} e **{res['xG_Fora']:.2f}** para o {fora}.")
+                    st.markdown(f"**Forma Recente:** {casa} `[{stats[casa]['Forma']}]` (Fator: {stats[casa]['Fator_Forma']:.2f}x) | {fora} `[{stats[fora]['Forma']}]` (Fator: {stats[fora]['Fator_Forma']:.2f}x)")
                     
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Vitória Casa (1)", f"{res['Casa']:.1%}")
@@ -284,13 +295,36 @@ else:
                     st.markdown("### 🎯 Resultados Exatos")
                     matriz = gerar_matriz_resultados(res['xG_Casa'], res['xG_Fora'])
                     st.dataframe(matriz.style.background_gradient(cmap='Greens', axis=None).format("{:.2%}"), use_container_width=True)
+                    
+                    st.markdown("### 📊 Evolução de Golos (Últimos 5 Jogos)")
+                    ultimos_casa = df[(df['Casa'] == casa) | (df['Fora'] == casa)].tail(5).copy()
+                    ultimos_fora = df[(df['Casa'] == fora) | (df['Fora'] == fora)].tail(5).copy()
+                    
+                    golos_casa_feitos, golos_casa_sofridos = [], []
+                    golos_fora_feitos, golos_fora_sofridos = [], []
+                    
+                    for _, j in ultimos_casa.iterrows():
+                        if j['Casa'] == casa: golos_casa_feitos.append(j['Golos_Casa']); golos_casa_sofridos.append(j['Golos_Fora'])
+                        else: golos_casa_feitos.append(j['Golos_Fora']); golos_casa_sofridos.append(j['Golos_Casa'])
+                            
+                    for _, j in ultimos_fora.iterrows():
+                        if j['Casa'] == fora: golos_fora_feitos.append(j['Golos_Casa']); golos_fora_sofridos.append(j['Golos_Fora'])
+                        else: golos_fora_feitos.append(j['Golos_Fora']); golos_fora_sofridos.append(j['Golos_Casa'])
+
+                    col_g1, col_g2 = st.columns(2)
+                    with col_g1:
+                        st.write(f"**{casa}**")
+                        st.bar_chart(pd.DataFrame({'Marcados': golos_casa_feitos, 'Sofridos': golos_casa_sofridos}).T)
+                    with col_g2:
+                        st.write(f"**{fora}**")
+                        st.bar_chart(pd.DataFrame({'Marcados': golos_fora_feitos, 'Sofridos': golos_fora_sofridos}).T)
 
                 with tab3:
                     st.markdown("### 🌍 Contexto (Apenas Leitura)")
                     ctx1, ctx2 = st.columns(2)
                     clima, clima_msg = obter_clima_automatico(casa)
-                    ctx1.info(f"*📍 Clima:* {clima_msg}")
-                    ctx2.info(f"*Forma:* {casa} [{stats[casa]['Forma']}] vs {fora} [{stats[fora]['Forma']}]")
+                    ctx1.info(f"**📍 Clima:** {clima_msg}")
+                    ctx2.info(f"**Forma:** {casa} [{stats[casa]['Forma']}] vs {fora} [{stats[fora]['Forma']}]")
                     
                     st.markdown("### 🤝 Histórico H2H (Últimos 5)")
                     h2h_jogos = df[((df['Casa'] == casa) & (df['Fora'] == fora)) | ((df['Casa'] == fora) & (df['Fora'] == casa))].tail(5)
@@ -300,6 +334,18 @@ else:
                         st.dataframe(h2h_display[['Data', 'Casa', 'Resultado', 'Fora']], hide_index=True, use_container_width=True)
                     else:
                         st.info("Sem dados de H2H recentes.")
+
+                with tab4:
+                    st.markdown(f"### 🏆 Classificação e Forma - {liga_nome}")
+                    if tabela:
+                        dados_liga = []
+                        for equipa_nome, info in tabela.items():
+                            forma_recente = stats[equipa_nome]['Forma'] if equipa_nome in stats else "N/A"
+                            dados_liga.append({'Posição': info['Posicao'], 'Equipa': equipa_nome, 'Pontos': info['Pontos'], 'Jogos': info['Jogos_Feitos'], 'Forma': forma_recente})
+                        df_liga = pd.DataFrame(dados_liga).sort_values('Posição')
+                        st.dataframe(df_liga, hide_index=True, use_container_width=True)
+                    else:
+                        st.warning("Dados da classificação não disponíveis para esta liga.")
 
             else:
                 st.error("Seleciona equipas diferentes.")
