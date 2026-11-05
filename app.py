@@ -334,54 +334,78 @@ else:
                     else:
                         st.info("Sem dados de H2H recentes.")
 
-                with tab4:
-                    st.markdown(f"### 🏆 Classificação e Momentum - {liga_nome}")
-                    st.markdown("*(PPG = Points Per Game / Média de Pontos por Jogo)*")
-                    
-                    if tabela and 'Peso' in df.columns:
-                        dados_liga = []
-                        for equipa_nome, info in tabela.items():
-                            ppg_campeonato = info['Pontos'] / info['Jogos_Feitos'] if info['Jogos_Feitos'] > 0 else 0
-                            
-                            jogos_equipa = df[(df['Casa'] == equipa_nome) | (df['Fora'] == equipa_nome)].tail(5)
-                            pontos_recentes = 0
-                            for _, j in jogos_equipa.iterrows():
-                                if j['Casa'] == equipa_nome:
-                                    if j['Golos_Casa'] > j['Golos_Fora']: pontos_recentes += 3
-                                    elif j['Golos_Casa'] == j['Golos_Fora']: pontos_recentes += 1
-                                else:
-                                    if j['Golos_Fora'] > j['Golos_Casa']: pontos_recentes += 3
-                                    elif j['Golos_Fora'] == j['Golos_Casa']: pontos_recentes += 1
-                            
-                            ppg_recente = pontos_recentes / len(jogos_equipa) if len(jogos_equipa) > 0 else 0
-                            forma_recente = stats[equipa_nome]['Forma'] if equipa_nome in stats else "N/A"
-                            
-                            dados_liga.append({
-                                'Posição': info['Posicao'],
-                                'Equipa': equipa_nome,
-                                'PPG Campeonato': round(ppg_campeonato, 2),
-                                'PPG Forma Recente': round(ppg_recente, 2),
-                                'Tendência': round(ppg_recente - ppg_campeonato, 2),
-                                'Forma (Últimos 5)': forma_recente
-                            })
-                        
-                        df_liga = pd.DataFrame(dados_liga).sort_values('Posição')
-                        
-                        st.dataframe(
-                            df_liga.style.background_gradient(subset=['Tendência'], cmap='RdYlGn', vmin=-2, vmax=2),
-                            hide_index=True, 
-                            use_container_width=True
-                        )
-                        
-                        st.markdown("---")
-                        st.markdown("**Legenda:**")
-                        st.markdown("*   **PPG Campeonato:** Média de pontos por jogo na época toda.")
-                        st.markdown("*   **PPG Forma Recente:** Média de pontos por jogo nos últimos 5 jogos.")
-                        st.markdown("*   **Tendência:** A diferença entre o PPG recente e o do campeonato. Se for **verde**, a equipa está em grande forma. Se for **vermelho**, está em crise.")
-                    else:
-                        st.warning("Dados da classificação ou forma recente não disponíveis.")
-
-            else:
-                st.error("Seleciona equipas diferentes.")
+               with tab4:
+    st.markdown(f"### 🏆 Classificação e Momentum - {liga_nome}")
+    st.markdown("(PPG = Points Per Game / Média de Pontos por Jogo)")
+    
+    # Construir a classificação manualmente a partir do DataFrame de jogos
+    if not df.empty:
+        # 1. Calcular pontos e jogos para cada equipa
+        tabela_manual = {}
+        for equipa in set(df['Casa']).union(set(df['Fora'])):
+            jogos_casa = df[df['Casa'] == equipa]
+            jogos_fora = df[df['Fora'] == equipa]
+            
+            pontos = 0
+            jogos_totais = len(jogos_casa) + len(jogos_fora)
+            
+            # Pontos em casa
+            pontos += (jogos_casa['Golos_Casa'] > jogos_casa['Golos_Fora']).sum() * 3
+            pontos += (jogos_casa['Golos_Casa'] == jogos_casa['Golos_Fora']).sum() * 1
+            
+            # Pontos fora
+            pontos += (jogos_fora['Golos_Fora'] > jogos_fora['Golos_Casa']).sum() * 3
+            pontos += (jogos_fora['Golos_Fora'] == jogos_fora['Golos_Casa']).sum() * 1
+            
+            tabela_manual[equipa] = {'Pontos': pontos, 'Jogos': jogos_totais}
+        
+        # 2. Ordenar a tabela pelos pontos
+        equipas_ordenadas = sorted(tabela_manual.items(), key=lambda item: item[1]['Pontos'], reverse=True)
+        
+        # 3. Criar a lista de dados para o Streamlit
+        dados_liga = []
+        for posicao, (equipa_nome, info) in enumerate(equipas_ordenadas, start=1):
+            # PPG Campeonato
+            ppg_campeonato = info['Pontos'] / info['Jogos'] if info['Jogos'] > 0 else 0
+            
+            # PPG Forma Recente
+            jogos_equipa = df[(df['Casa'] == equipa_nome) | (df['Fora'] == equipa_nome)].tail(5)
+            pontos_recentes = 0
+            for _, j in jogos_equipa.iterrows():
+                if j['Casa'] == equipa_nome:
+                    if j['Golos_Casa'] > j['Golos_Fora']: pontos_recentes += 3
+                    elif j['Golos_Casa'] == j['Golos_Fora']: pontos_recentes += 1
+                else:
+                    if j['Golos_Fora'] > j['Golos_Casa']: pontos_recentes += 3
+                    elif j['Golos_Fora'] == j['Golos_Casa']: pontos_recentes += 1
+            
+            ppg_recente = pontos_recentes / len(jogos_equipa) if len(jogos_equipa) > 0 else 0
+            
+            # Forma e Tendência
+            forma_recente = stats[equipa_nome]['Forma'] if equipa_nome in stats else "N/A"
+            tendencia = ppg_recente - ppg_campeonato
+            
+            dados_liga.append({
+                'Posição': posicao,
+                'Equipa': equipa_nome,
+                'PPG Campeonato': round(ppg_campeonato, 2),
+                'PPG Forma Recente': round(ppg_recente, 2),
+                'Tendência': round(tendencia, 2),
+                'Forma (Últimos 5)': forma_recente
+            })
+        
+        # 4. Mostrar a tabela
+        df_liga = pd.DataFrame(dados_liga)
+        st.dataframe(
+            df_liga.style.background_gradient(subset=['Tendência'], cmap='RdYlGn', vmin=-2, vmax=2),
+            hide_index=True, 
+            use_container_width=True
+        )
+        
+        st.markdown("---")
+        st.markdown("*Legenda:*")
+        st.markdown("*   *PPG Campeonato:* Média de pontos por jogo na época toda.")
+        st.markdown("*   *PPG Forma Recente:* Média de pontos por jogo nos últimos 5 jogos.")
+        st.markdown("*   *Tendência:* A diferença entre o PPG recente e o do campeonato. Se for *verde, a equipa está em grande forma. Se for **vermelho*, está em crise.")
     else:
-        st.error("⚠️ Não foi possível carregar os dados. Verifica a API Key ou espera 1 minuto (limite de pedidos).")
+        st.warning("Não há dados de jogos suficientes para calcular a classificação.")
