@@ -219,7 +219,6 @@ else:
                 
                 st.markdown(f"## 🏆 Análise: {casa} vs {fora}")
                 
-                # Índice de Confiança
                 indice = calcular_indice_confianca(res)
                 st.markdown(f"### 🎯 Índice de Confiança do Modelo: **{indice}/10**")
                 st.progress(indice / 10)
@@ -336,16 +335,51 @@ else:
                         st.info("Sem dados de H2H recentes.")
 
                 with tab4:
-                    st.markdown(f"### 🏆 Classificação e Forma - {liga_nome}")
-                    if tabela:
+                    st.markdown(f"### 🏆 Classificação e Momentum - {liga_nome}")
+                    st.markdown("*(PPG = Points Per Game / Média de Pontos por Jogo)*")
+                    
+                    if tabela and 'Peso' in df.columns:
                         dados_liga = []
                         for equipa_nome, info in tabela.items():
+                            ppg_campeonato = info['Pontos'] / info['Jogos_Feitos'] if info['Jogos_Feitos'] > 0 else 0
+                            
+                            jogos_equipa = df[(df['Casa'] == equipa_nome) | (df['Fora'] == equipa_nome)].tail(5)
+                            pontos_recentes = 0
+                            for _, j in jogos_equipa.iterrows():
+                                if j['Casa'] == equipa_nome:
+                                    if j['Golos_Casa'] > j['Golos_Fora']: pontos_recentes += 3
+                                    elif j['Golos_Casa'] == j['Golos_Fora']: pontos_recentes += 1
+                                else:
+                                    if j['Golos_Fora'] > j['Golos_Casa']: pontos_recentes += 3
+                                    elif j['Golos_Fora'] == j['Golos_Casa']: pontos_recentes += 1
+                            
+                            ppg_recente = pontos_recentes / len(jogos_equipa) if len(jogos_equipa) > 0 else 0
                             forma_recente = stats[equipa_nome]['Forma'] if equipa_nome in stats else "N/A"
-                            dados_liga.append({'Posição': info['Posicao'], 'Equipa': equipa_nome, 'Pontos': info['Pontos'], 'Jogos': info['Jogos_Feitos'], 'Forma': forma_recente})
+                            
+                            dados_liga.append({
+                                'Posição': info['Posicao'],
+                                'Equipa': equipa_nome,
+                                'PPG Campeonato': round(ppg_campeonato, 2),
+                                'PPG Forma Recente': round(ppg_recente, 2),
+                                'Tendência': round(ppg_recente - ppg_campeonato, 2),
+                                'Forma (Últimos 5)': forma_recente
+                            })
+                        
                         df_liga = pd.DataFrame(dados_liga).sort_values('Posição')
-                        st.dataframe(df_liga, hide_index=True, use_container_width=True)
+                        
+                        st.dataframe(
+                            df_liga.style.background_gradient(subset=['Tendência'], cmap='RdYlGn', vmin=-2, vmax=2),
+                            hide_index=True, 
+                            use_container_width=True
+                        )
+                        
+                        st.markdown("---")
+                        st.markdown("**Legenda:**")
+                        st.markdown("*   **PPG Campeonato:** Média de pontos por jogo na época toda.")
+                        st.markdown("*   **PPG Forma Recente:** Média de pontos por jogo nos últimos 5 jogos.")
+                        st.markdown("*   **Tendência:** A diferença entre o PPG recente e o do campeonato. Se for **verde**, a equipa está em grande forma. Se for **vermelho**, está em crise.")
                     else:
-                        st.warning("Dados da classificação não disponíveis para esta liga.")
+                        st.warning("Dados da classificação ou forma recente não disponíveis.")
 
             else:
                 st.error("Seleciona equipas diferentes.")
