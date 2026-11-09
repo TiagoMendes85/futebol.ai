@@ -1,3 +1,4 @@
+
 import streamlit as st
 import requests
 import pandas as pd
@@ -32,11 +33,8 @@ LIGAS_DISPONIVEIS = {
     "Champions League": "CL"
 }
 
-# Filtro de Ligas
-ligas_filtradas = st.sidebar.multiselect("Filtrar Ligas (Opcional)", options=list(LIGAS_DISPONIVEIS.keys()), default=list(LIGAS_DISPONIVEIS.keys()))
-if not ligas_filtradas: ligas_filtradas = list(LIGAS_DISPONIVEIS.keys())
-
-liga_nome = st.sidebar.selectbox("🏆 Escolhe o Campeonato", ligas_filtradas)
+# Lista simples e limpa
+liga_nome = st.sidebar.selectbox("🏆 Escolhe o Campeonato", list(LIGAS_DISPONIVEIS.keys()))
 liga_codigo = LIGAS_DISPONIVEIS[liga_nome]
 
 # --- FUNÇÕES DE DADOS ---
@@ -85,16 +83,16 @@ def obter_clima_automatico(nome_equipa):
 def calcular_metricas(df):
     if df.empty: return None, None, None
     df = df.sort_values('Data')
-    
+   
     df['Peso'] = df.index.map(lambda x: 2.5 if x >= len(df) - 15 else 1.0)
     media_golos_casa = np.average(df['Golos_Casa'], weights=df['Peso'])
     media_golos_fora = np.average(df['Golos_Fora'], weights=df['Peso'])
     if media_golos_casa == 0: media_golos_casa = 1.4
     if media_golos_fora == 0: media_golos_fora = 1.2
-    
+   
     stats = {}
     equipas = set(df['Casa']).union(set(df['Fora']))
-    
+   
     for equipa in equipas:
         jogos_casa = df[df['Casa'] == equipa]
         jogos_fora = df[df['Fora'] == equipa]
@@ -102,22 +100,22 @@ def calcular_metricas(df):
         jogos_f = len(jogos_fora)
         peso_c = jogos_c / (jogos_c + 5.0)
         peso_f = jogos_f / (jogos_f + 5.0)
-        
+       
         ataque_casa_bruto = np.average(jogos_casa['Golos_Casa'], weights=jogos_casa['Peso']) / media_golos_casa if jogos_c > 0 else 1.0
         defesa_casa_bruto = np.average(jogos_casa['Golos_Fora'], weights=jogos_casa['Peso']) / media_golos_fora if jogos_c > 0 else 1.0
         ataque_fora_bruto = np.average(jogos_fora['Golos_Fora'], weights=jogos_fora['Peso']) / media_golos_fora if jogos_f > 0 else 1.0
         defesa_fora_bruto = np.average(jogos_fora['Golos_Casa'], weights=jogos_fora['Peso']) / media_golos_casa if jogos_f > 0 else 1.0
-        
+       
         ataque_casa = (ataque_casa_bruto * peso_c) + (1.0 * (1 - peso_c))
         defesa_casa = (defesa_casa_bruto * peso_c) + (1.0 * (1 - peso_c))
         ataque_fora = (ataque_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
         defesa_fora = (defesa_fora_bruto * peso_f) + (1.0 * (1 - peso_f))
-        
+       
         cs_casa = (jogos_casa['Golos_Fora'] == 0).sum() / jogos_c if jogos_c > 0 else 0.25
         cs_fora = (jogos_fora['Golos_Casa'] == 0).sum() / jogos_f if jogos_f > 0 else 0.25
         fts_casa = (jogos_casa['Golos_Casa'] == 0).sum() / jogos_c if jogos_c > 0 else 0.25
         fts_fora = (jogos_fora['Golos_Fora'] == 0).sum() / jogos_f if jogos_f > 0 else 0.25
-            
+           
         ultimos_jogos = df[(df['Casa'] == equipa) | (df['Fora'] == equipa)].tail(5)
         forma = ""
         for _, jogo in ultimos_jogos.iterrows():
@@ -139,7 +137,7 @@ def calcular_metricas(df):
         stats[equipa] = {
             'Ataque_Casa': ataque_casa * fator_forma, 'Defesa_Casa': defesa_casa / fator_forma,
             'Ataque_Fora': ataque_fora * fator_forma, 'Defesa_Fora': defesa_fora / fator_forma,
-            'Forma': forma.strip(), 'CS_Casa': cs_casa, 'CS_Fora': cs_fora, 
+            'Forma': forma.strip(), 'CS_Casa': cs_casa, 'CS_Fora': cs_fora,
             'FTS_Casa': fts_casa, 'FTS_Fora': fts_fora, 'Fator_Forma': fator_forma
         }
     return stats, media_golos_casa, media_golos_fora
@@ -154,7 +152,7 @@ def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
     golos_casa_sim = np.random.poisson(lambda_casa, sims)
     golos_fora_sim = np.random.poisson(lambda_fora, sims)
     total_golos_sim = golos_casa_sim + golos_fora_sim
-    
+   
     golos_ht_casa_sim = np.random.poisson(lambda_ht_casa, sims)
     golos_ht_fora_sim = np.random.poisson(lambda_ht_fora, sims)
     total_golos_ht_sim = golos_ht_casa_sim + golos_ht_fora_sim
@@ -167,11 +165,11 @@ def prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora, sims=10000):
     p_over35 = np.mean(total_golos_sim > 3.5)
     p_btts = np.mean((golos_casa_sim > 0) & (golos_fora_sim > 0))
     p_over05_ht = np.mean(total_golos_ht_sim > 0.5)
-    
+   
     return {
-        'Casa': p_casa, 'Empate': p_empate, 'Fora': p_fora, 
-        'Over1.5': p_over15, 'Over2.5': p_over25, 'Over3.5': p_over35, 
-        'BTTS': p_btts, 'Over05_HT': p_over05_ht, 
+        'Casa': p_casa, 'Empate': p_empate, 'Fora': p_fora,
+        'Over1.5': p_over15, 'Over2.5': p_over25, 'Over3.5': p_over35,
+        'BTTS': p_btts, 'Over05_HT': p_over05_ht,
         'xG_Casa': lambda_casa, 'xG_Fora': lambda_fora
     }
 
@@ -212,65 +210,74 @@ else:
         equipas = sorted(list(stats.keys()))
         casa = col1.selectbox("🏠 Equipa da Casa", equipas)
         fora = col2.selectbox("✈️ Equipa de Fora", equipas)
-        
+       
         if st.button("🚀 Gerar Análise Completa", use_container_width=True):
             if casa != fora:
                 res = prever_jogo_monte_carlo(casa, fora, stats, med_casa, med_fora)
-                
+               
                 st.markdown(f"## 🏆 Análise: {casa} vs {fora}")
-                
+               
                 indice = calcular_indice_confianca(res)
                 st.markdown(f"### 🎯 Índice de Confiança do Modelo: **{indice}/10**")
                 st.progress(indice / 10)
-                
+               
                 tab1, tab2, tab3, tab4 = st.tabs(["📊 Resumo e Odds", "📈 Estatísticas Puras", "⚔️ H2H e Contexto", "🏆 Classificação da Liga"])
-                
+               
                 with tab1:
                     st.info(f"O modelo projeta um xG de **{res['xG_Casa']:.2f}** para o {casa} e **{res['xG_Fora']:.2f}** para o {fora}.")
                     st.markdown(f"**Forma Recente:** {casa} `[{stats[casa]['Forma']}]` (Fator: {stats[casa]['Fator_Forma']:.2f}x) | {fora} `[{stats[fora]['Forma']}]` (Fator: {stats[fora]['Fator_Forma']:.2f}x)")
-                    
+                   
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Vitória Casa (1)", f"{res['Casa']:.1%}")
                     c2.metric("Empate (X)", f"{res['Empate']:.1%}")
                     c3.metric("Vitória Fora (2)", f"{res['Fora']:.1%}")
-                    
+                   
                     c4, c5, c6 = st.columns(3)
                     c4.metric("Mais de 1.5 Golos", f"{res['Over1.5']:.1%}")
                     c5.metric("Mais de 2.5 Golos", f"{res['Over2.5']:.1%}")
                     c6.metric("Mais de 3.5 Golos", f"{res['Over3.5']:.1%}")
-                    
+                   
                     c7, c8 = st.columns(2)
                     c7.metric("Ambas Marcam (BTTS)", f"{res['BTTS']:.1%}")
                     c8.metric("Mais de 0.5 Golos 1ª Parte (HT)", f"{res['Over05_HT']:.1%}")
-                    
+                   
                     st.markdown("### 💡 Odds Justas e Value Bet")
                     col_o1, col_o2, col_o3 = st.columns(3)
                     odd_1 = col_o1.number_input("Odd Casa (1)", min_value=1.01, step=0.01, value=float(round(1/res['Casa'], 2)))
                     odd_X = col_o2.number_input("Odd Empate (X)", min_value=1.01, step=0.01, value=float(round(1/res['Empate'], 2)))
                     odd_2 = col_o3.number_input("Odd Fora (2)", min_value=1.01, step=0.01, value=float(round(1/res['Fora'], 2)))
-                    
+                   
                     col_o4, col_o5, col_o6 = st.columns(3)
                     odd_over25 = col_o4.number_input("Odd Mais de 2.5 Golos", min_value=1.01, step=0.01, value=float(round(1/res['Over2.5'], 2)))
                     odd_btts = col_o5.number_input("Odd Ambas Marcam (BTTS)", min_value=1.01, step=0.01, value=float(round(1/res['BTTS'], 2)))
                     odd_ht = col_o6.number_input("Odd Over 0.5 HT", min_value=1.01, step=0.01, value=float(round(1/res['Over05_HT'], 2)))
-                    
+                   
                     ev_1 = (res['Casa'] * odd_1) - 1
                     ev_X = (res['Empate'] * odd_X) - 1
                     ev_2 = (res['Fora'] * odd_2) - 1
                     ev_over25 = (res['Over2.5'] * odd_over25) - 1
                     ev_btts = (res['BTTS'] * odd_btts) - 1
                     ev_ht = (res['Over05_HT'] * odd_ht) - 1
-                    
+                   
                     conselho_1 = gerar_conselho_aposta(ev_1)
                     conselho_X = gerar_conselho_aposta(ev_X)
                     conselho_2 = gerar_conselho_aposta(ev_2)
                     conselho_over = gerar_conselho_aposta(ev_over25)
                     conselho_btts = gerar_conselho_aposta(ev_btts)
                     conselho_ht = gerar_conselho_aposta(ev_ht)
-                    
+                   
+                    # Notas de confiança individuais (Probabilidade * 10)
+                    nota_1 = round(res['Casa'] * 10, 1)
+                    nota_X = round(res['Empate'] * 10, 1)
+                    nota_2 = round(res['Fora'] * 10, 1)
+                    nota_over = round(res['Over2.5'] * 10, 1)
+                    nota_btts = round(res['BTTS'] * 10, 1)
+                    nota_ht = round(res['Over05_HT'] * 10, 1)
+                   
                     odds_df = pd.DataFrame({
                         'Mercado': ['Vitória Casa', 'Empate', 'Vitória Fora', 'Mais de 2.5', 'BTTS', 'Over 0.5 HT'],
                         'Probabilidade': [f"{res['Casa']:.1%}", f"{res['Empate']:.1%}", f"{res['Fora']:.1%}", f"{res['Over2.5']:.1%}", f"{res['BTTS']:.1%}", f"{res['Over05_HT']:.1%}"],
+                        'Confiança (0-10)': [nota_1, nota_X, nota_2, nota_over, nota_btts, nota_ht],
                         'Odd Justa': [f"{1/res['Casa']:.2f}", f"{1/res['Empate']:.2f}", f"{1/res['Fora']:.2f}", f"{1/res['Over2.5']:.2f}", f"{1/res['BTTS']:.2f}", f"{1/res['Over05_HT']:.2f}"],
                         'Odd Inserida': [odd_1, odd_X, odd_2, odd_over25, odd_btts, odd_ht],
                         'EV': [f"{ev_1:.1%}", f"{ev_X:.1%}", f"{ev_2:.1%}", f"{ev_over25:.1%}", f"{ev_btts:.1%}", f"{ev_ht:.1%}"],
@@ -282,7 +289,7 @@ else:
                     st.markdown("### 📊 Comparação de Força (xG Esperado)")
                     chart_data = pd.DataFrame({'Equipa': [casa, fora], 'xG': [res['xG_Casa'], res['xG_Fora']]}).set_index('Equipa')
                     st.bar_chart(chart_data, color="#00a86b")
-                    
+                   
                     st.markdown("### 🛡️ Estatísticas Visuais")
                     c_cs1, c_cs2 = st.columns(2)
                     c_cs1.metric(f"Clean Sheets em Casa ({casa})", f"{stats[casa]['CS_Casa']:.1%}")
@@ -294,18 +301,18 @@ else:
                     st.markdown("### 🎯 Resultados Exatos")
                     matriz = gerar_matriz_resultados(res['xG_Casa'], res['xG_Fora'])
                     st.dataframe(matriz.style.background_gradient(cmap='Greens', axis=None).format("{:.2%}"), use_container_width=True)
-                    
+                   
                     st.markdown("### 📊 Evolução de Golos (Últimos 5 Jogos)")
                     ultimos_casa = df[(df['Casa'] == casa) | (df['Fora'] == casa)].tail(5).copy()
                     ultimos_fora = df[(df['Casa'] == fora) | (df['Fora'] == fora)].tail(5).copy()
-                    
+                   
                     golos_casa_feitos, golos_casa_sofridos = [], []
                     golos_fora_feitos, golos_fora_sofridos = [], []
-                    
+                   
                     for _, j in ultimos_casa.iterrows():
                         if j['Casa'] == casa: golos_casa_feitos.append(j['Golos_Casa']); golos_casa_sofridos.append(j['Golos_Fora'])
                         else: golos_casa_feitos.append(j['Golos_Fora']); golos_casa_sofridos.append(j['Golos_Casa'])
-                            
+                           
                     for _, j in ultimos_fora.iterrows():
                         if j['Casa'] == fora: golos_fora_feitos.append(j['Golos_Casa']); golos_fora_sofridos.append(j['Golos_Fora'])
                         else: golos_fora_feitos.append(j['Golos_Fora']); golos_fora_sofridos.append(j['Golos_Casa'])
@@ -318,13 +325,63 @@ else:
                         st.write(f"**{fora}**")
                         st.bar_chart(pd.DataFrame({'Marcados': golos_fora_feitos, 'Sofridos': golos_fora_sofridos}).T)
 
+                    # NOVA TABELA DE APOIO À DECISÃO
+                    st.markdown("### 🔍 Tabela de Apoio à Decisão (Últimos 5 Jogos)")
+                    st.write("Verifica se o histórico recente apoia a previsão do modelo para Over 2.5 e BTTS.")
+                   
+                    def obter_dados_recentes(nome_equipa):
+                        jogos = df[(df['Casa'] == nome_equipa) | (df['Fora'] == nome_equipa)].tail(5)
+                        resumo = []
+                        for _, j in jogos.iterrows():
+                            is_casa = j['Casa'] == nome_equipa
+                            golos_marcados = j['Golos_Casa'] if is_casa else j['Golos_Fora']
+                            golos_sofridos = j['Golos_Fora'] if is_casa else j['Golos_Casa']
+                            total_golos = golos_marcados + golos_sofridos
+                           
+                            btts = "Sim" if (golos_marcados > 0 and golos_sofridos > 0) else "Não"
+                            over25 = "Sim" if total_golos > 2.5 else "Não"
+                           
+                            resumo.append({
+                                'Adversário': j['Fora'] if is_casa else j['Casa'],
+                                'Local': 'Casa' if is_casa else 'Fora',
+                                'Resultado': f"{golos_marcados} - {golos_sofridos}",
+                                'Total Golos': total_golos,
+                                'Over 2.5': over25,
+                                'BTTS': btts
+                            })
+                        return pd.DataFrame(resumo)
+
+                    col_tab1, col_tab2 = st.columns(2)
+                   
+                    with col_tab1:
+                        st.markdown(f"**{casa}**")
+                        df_casa_recente = obter_dados_recentes(casa)
+                        if not df_casa_recente.empty:
+                            total_over = (df_casa_recente['Over 2.5'] == 'Sim').sum()
+                            total_btts = (df_casa_recente['BTTS'] == 'Sim').sum()
+                            st.info(f"Últimos 5 jogos: **{total_over}** Over 2.5 | **{total_btts}** BTTS")
+                            st.dataframe(df_casa_recente, hide_index=True, use_container_width=True)
+                        else:
+                            st.write("Sem dados recentes.")
+
+                    with col_tab2:
+                        st.markdown(f"**{fora}**")
+                        df_fora_recente = obter_dados_recentes(fora)
+                        if not df_fora_recente.empty:
+                            total_over = (df_fora_recente['Over 2.5'] == 'Sim').sum()
+                            total_btts = (df_fora_recente['BTTS'] == 'Sim').sum()
+                            st.info(f"Últimos 5 jogos: **{total_over}** Over 2.5 | **{total_btts}** BTTS")
+                            st.dataframe(df_fora_recente, hide_index=True, use_container_width=True)
+                        else:
+                            st.write("Sem dados recentes.")
+
                 with tab3:
                     st.markdown("### 🌍 Contexto (Apenas Leitura)")
                     ctx1, ctx2 = st.columns(2)
                     clima, clima_msg = obter_clima_automatico(casa)
                     ctx1.info(f"**📍 Clima:** {clima_msg}")
                     ctx2.info(f"**Forma:** {casa} [{stats[casa]['Forma']}] vs {fora} [{stats[fora]['Forma']}]")
-                    
+                   
                     st.markdown("### 🤝 Histórico H2H (Últimos 5)")
                     h2h_jogos = df[((df['Casa'] == casa) & (df['Fora'] == fora)) | ((df['Casa'] == fora) & (df['Fora'] == casa))].tail(5)
                     if not h2h_jogos.empty:
@@ -337,29 +394,29 @@ else:
                 with tab4:
                     st.markdown(f"### 🏆 Classificação e Momentum - {liga_nome}")
                     st.markdown("*(PPG = Points Per Game / Média de Pontos por Jogo)*")
-                    
+                   
                     if not df.empty:
                         tabela_manual = {}
                         for equipa in set(df['Casa']).union(set(df['Fora'])):
                             jogos_casa = df[df['Casa'] == equipa]
                             jogos_fora = df[df['Fora'] == equipa]
-                            
+                           
                             pontos = 0
                             jogos_totais = len(jogos_casa) + len(jogos_fora)
-                            
+                           
                             pontos += (jogos_casa['Golos_Casa'] > jogos_casa['Golos_Fora']).sum() * 3
                             pontos += (jogos_casa['Golos_Casa'] == jogos_casa['Golos_Fora']).sum() * 1
                             pontos += (jogos_fora['Golos_Fora'] > jogos_fora['Golos_Casa']).sum() * 3
                             pontos += (jogos_fora['Golos_Fora'] == jogos_fora['Golos_Casa']).sum() * 1
-                            
+                           
                             tabela_manual[equipa] = {'Pontos': pontos, 'Jogos': jogos_totais}
-                        
+                       
                         equipas_ordenadas = sorted(tabela_manual.items(), key=lambda item: item[1]['Pontos'], reverse=True)
-                        
+                       
                         dados_liga = []
                         for posicao, (equipa_nome, info) in enumerate(equipas_ordenadas, start=1):
                             ppg_campeonato = info['Pontos'] / info['Jogos'] if info['Jogos'] > 0 else 0
-                            
+                           
                             jogos_equipa = df[(df['Casa'] == equipa_nome) | (df['Fora'] == equipa_nome)].tail(5)
                             pontos_recentes = 0
                             for _, j in jogos_equipa.iterrows():
@@ -369,11 +426,11 @@ else:
                                 else:
                                     if j['Golos_Fora'] > j['Golos_Casa']: pontos_recentes += 3
                                     elif j['Golos_Fora'] == j['Golos_Casa']: pontos_recentes += 1
-                            
+                           
                             ppg_recente = pontos_recentes / len(jogos_equipa) if len(jogos_equipa) > 0 else 0
                             forma_recente = stats[equipa_nome]['Forma'] if equipa_nome in stats else "N/A"
                             tendencia = ppg_recente - ppg_campeonato
-                            
+                           
                             dados_liga.append({
                                 'Posição': posicao,
                                 'Equipa': equipa_nome,
@@ -382,15 +439,15 @@ else:
                                 'Tendência': round(tendencia, 2),
                                 'Forma (Últimos 5)': forma_recente
                             })
-                        
+                       
                         df_liga = pd.DataFrame(dados_liga)
                         st.dataframe(
                             df_liga.style.background_gradient(subset=['Tendência'], cmap='RdYlGn', vmin=-2, vmax=2)
                             .format({'PPG Campeonato': "{:.2f}", 'PPG Forma Recente': "{:.2f}", 'Tendência': "{:.2f}"}),
-                            hide_index=True, 
+                            hide_index=True,
                             use_container_width=True
                         )
-                        
+                       
                         st.markdown("---")
                         st.markdown("**Legenda:**")
                         st.markdown("*   **PPG Campeonato:** Média de pontos por jogo na época toda.")
